@@ -6,19 +6,24 @@
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <div class="paper">
-    <!-- 拖拽区域 -->
-    <div class="paper-header" data-tauri-drag-region>
-      <!-- 明确排除拖拽：按钮可点击 -->
-      <span class="dot red" id="btn-close" data-tauri-drag-region="false"></span>
-      <span class="dot yellow" id="btn-min" data-tauri-drag-region="false"></span>
-      <span class="dot green" id="btn-top" data-tauri-drag-region="false"></span>
+  <!-- 窗口实体背景（兜底层，极其重要） -->
+  <div class="window-bg">
+
+    <div class="paper">
+      <!-- 标题栏：仅这里可拖拽 -->
+      <div class="paper-header" data-tauri-drag-region>
+        <span class="dot red" id="btn-close" data-tauri-drag-region="false"></span>
+        <span class="dot yellow" id="btn-min" data-tauri-drag-region="false"></span>
+        <span class="dot green" id="btn-top" data-tauri-drag-region="false"></span>
+      </div>
+
+      <!-- 内容区：整块 textarea -->
+      <textarea
+        class="paper-content"
+        placeholder="写点什么…"
+      ></textarea>
     </div>
 
-    <textarea
-      class="paper-content"
-      placeholder="写点什么…"
-    ></textarea>
   </div>
 
   <script src="./main.js"></script>
