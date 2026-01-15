@@ -360,6 +360,83 @@ fn extract_position_from_content(content: &str) -> (Option<f64>, Option<f64>) {
     (x, y)
 }
 
+// 更新内容
+fn update_content_in_file(file_path: &Path, content: &str, x: Option<f64>, y: Option<f64>) -> Result<(), String> {
+    let existing_content = if file_path.exists() {
+        fs::read_to_string(file_path)
+            .unwrap_or_else(|_| String::new())
+    } else {
+        String::new()
+    };
+
+    let final_content = if existing_content.starts_with("---") {
+        // 如果已有front matter，只更新位置信息
+        let updated_content = if let (Some(pos_x), Some(pos_y)) = (x, y) {
+            update_position_in_content(&existing_content, pos_x, pos_y)?
+        } else {
+            existing_content
+        };
+        
+        // 在front matter之后插入实际内容
+        insert_content_after_front_matter(&updated_content, content)
+    } else {
+        // 如果没有front matter，创建新的
+        if let (Some(pos_x), Some(pos_y)) = (x, y) {
+            format!(
+                "---\nx: {}\ny: {}\n---\n{}",
+                pos_x, pos_y, content
+            )
+        } else {
+            content.to_string()
+        }
+    };
+
+    fs::write(file_path, final_content)
+        .map_err(|e| format!("写入文件失败: {}", e))
+}
+
+// 在front matter之后插入内容
+fn insert_content_after_front_matter(full_content: &str, new_content: &str) -> String {
+    let lines: Vec<&str> = full_content.lines().collect();
+    let mut result_lines = Vec::<String>::new();
+    let mut in_front_matter = false;
+    let mut front_matter_ended = false;
+    let mut line_idx = 0;
+
+    // 复制front matter部分
+    while line_idx < lines.len() {
+        let line = lines[line_idx];
+        result_lines.push(line.to_string());
+
+        if line.trim() == "---" {
+            if !in_front_matter {
+                in_front_matter = true;
+            } else {
+                // front matter结束
+                front_matter_ended = true;
+                break;
+            }
+        }
+        line_idx += 1;
+    }
+
+    // 如果front matter已经结束，添加新内容
+    if front_matter_ended {
+        // 跳过结束的 ---
+        line_idx += 1;
+        
+        // 添加新内容，替换掉原有的内容部分
+        result_lines.push(String::new()); // 添加空行
+        result_lines.push(new_content.to_string());
+    } else {
+        // 如果没找到front matter结束，添加内容
+        result_lines.push(String::new());
+        result_lines.push(new_content.to_string());
+    }
+
+    result_lines.join("\n")
+}
+
 // 初始化便签目录结构
 #[tauri::command]
 async fn initialize_notes_directory(window: tauri::WebviewWindow) -> Result<String, String> {
@@ -586,6 +663,53 @@ async fn update_note_position(window: tauri::WebviewWindow, id: String, x: f64, 
     }
 }
 
+// 保存便签内容
+#[tauri::command]
+async fn save_note_content(window: tauri::WebviewWindow, id: String, content: String, x: Option<f64>, y: Option<f64>) -> Result<(), String> {
+    let notes_dir = PathBuf::from(ensure_notes_directory(window).await?);
+    
+    // 从索引中获取文件路径
+    let index_path = notes_dir.join("index.json");
+    if !index_path.exists() {
+        return Err("索引文件不存在".to_string());
+    }
+
+    let mut index: IndexFile = {
+        let content_str = fs::read_to_string(&index_path)
+            .map_err(|e| format!("读取索引文件失败: {}", e))?;
+        serde_json::from_str(&content_str)
+            .map_err(|e| format!("解析索引文件失败: {}", e))?
+    };
+
+    if let Some(entry) = index.notes.get(&id) {
+        let file_path = notes_dir.join(&entry.path);
+        
+        if !file_path.exists() {
+            return Err("便签文件不存在".to_string());
+        }
+
+        // 更新文件内容
+        update_content_in_file(&file_path, &content, x, y)
+            .map_err(|e| format!("更新内容失败: {}", e))?;
+
+        // 更新索引中的更新时间
+        if let Some(indexed_note) = index.notes.get_mut(&id) {
+            indexed_note.updated_at = get_current_iso8601_time();
+        }
+
+        // 保存更新后的索引
+        index.last_updated_at = get_current_iso8601_time();
+        let json_content = serde_json::to_string_pretty(&index)
+            .map_err(|e| format!("序列化索引失败: {}", e))?;
+        fs::write(&index_path, json_content)
+            .map_err(|e| format!("写入索引文件失败: {}", e))?;
+
+        Ok(())
+    } else {
+        Err("找不到指定的便签".to_string())
+    }
+}
+
 // 新增创建窗口的命令
 #[tauri::command]
 async fn create_note_window(
@@ -633,7 +757,8 @@ fn main() {
             get_active_notes,
             create_note,
             load_note,
-            update_note_position
+            update_note_position,
+            save_note_content
         ])
         .setup(|app| {
             // 应用启动时初始化目录

@@ -134,7 +134,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     });
     
-    // 监听文本变化并自动保存
+    // 监听文本变化并自动保存内容
     textarea.addEventListener('input', () => {
       // 清除之前的定时器
       if (saveTimer) {
@@ -144,17 +144,27 @@ document.addEventListener('DOMContentLoaded', async () => {
       // 设置新的定时器，在用户停止输入1秒后保存
       saveTimer = setTimeout(async () => {
         try {
-          // 获取当前位置用于创建便签
+          // 获取当前位置
           const position = await win.innerPosition();
-          // 创建或更新便签，如果便签不存在则创建
+          
+          // 先确保便签存在（创建或更新）
           await window.__TAURI__.core.invoke('create_note', {
             id: noteId,
             x: Math.round(position.x),  // 当前窗口x坐标
             y: Math.round(position.y)   // 当前窗口y坐标
           });
-          console.log(`便签 ${noteId} 已创建/更新`);
+          
+          // 然后保存内容到该便签
+          await window.__TAURI__.core.invoke('save_note_content', {
+            id: noteId,
+            content: textarea.value,
+            x: Math.round(position.x),
+            y: Math.round(position.y)
+          });
+          
+          console.log(`便签 ${noteId} 内容已保存，长度: ${textarea.value.length}`);
         } catch (err) {
-          console.error('创建/更新便签失败:', err);
+          console.error('保存便签内容失败:', err);
         }
       }, 1000); // 1秒延迟保存
     });
