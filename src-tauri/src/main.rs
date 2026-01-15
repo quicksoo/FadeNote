@@ -19,35 +19,32 @@ fn get_app_data_dir() -> Result<PathBuf, String> {
 
 // 核心数据模型
 #[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
 struct NoteMeta {
     id: String,
-    #[serde(rename = "createdAt")]
+    #[serde(rename = "createdAt", alias = "created_at")]
     created_at: String,
-    #[serde(rename = "expiresAt")]
+    #[serde(rename = "expiresAt", alias = "expires_at")]
     expires_at: String,
     x: Option<f64>,
     y: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
 struct IndexNoteEntry {
     path: String,
-    #[serde(rename = "createdAt")]
+    #[serde(rename = "createdAt", alias = "created_at")]
     created_at: String,
-    #[serde(rename = "expiresAt")]
+    #[serde(rename = "expiresAt", alias = "expires_at")]
     expires_at: String,
-    #[serde(rename = "updatedAt")]
+    #[serde(rename = "updatedAt", alias = "updated_at")]
     updated_at: String,
     archived: bool,
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct IndexFile {
     version: u32,
-    #[serde(rename = "lastUpdatedAt")]
+    #[serde(rename = "lastUpdatedAt", alias = "last_updated_at")]
     last_updated_at: String,
     notes: HashMap<String, IndexNoteEntry>,
 }
