@@ -1,6 +1,6 @@
 {
-  "identifier": "top.quickso.note",
-  "productName": "便签",
+  "identifier": "top.quickso.fadenote",
+  "productName": "fadenote",
   "version": "0.1.0",
 
   "app": {
@@ -8,7 +8,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "便签",
+        "title": "FadeNote",
         "width": 360,
         "height": 420,
         "resizable": true,

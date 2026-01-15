@@ -52,48 +52,64 @@ document.addEventListener('DOMContentLoaded', async () => {
   console.log("便签窗口已加载");
   console.log("便签ID:", noteId);
   
-  // 检查是否已设置保存目录，如果没有则立即提示用户设置
+  // 自动获取AppData目录，不再需要用户手动设置
   try {
-    const currentDir = await window.__TAURI__.core.invoke('get_notes_directory');
-    if (!currentDir || currentDir === undefined) {
-      // 如果没有设置目录，使用原生目录选择对话框
-      const directory = await window.__TAURI__.core.invoke('show_directory_picker');
-      if (directory) {
-        const result = await window.__TAURI__.core.invoke('set_notes_directory', {
-          directory: directory
-        });
-        document.getElementById("current-dir-display").textContent = `目录: ${result}`;
-        console.log("便签目录已设置:", result);
-      } else {
-        alert("您必须选择一个目录来保存便签！");
-        // 可以考虑递归调用或循环直到用户选择一个目录
-        // 但为了简单起见，这里只是提醒用户
-      }
-    } else {
+    const currentDir = await window.__TAURI__.core.invoke('ensure_notes_directory');
+    if (currentDir) {
       document.getElementById("current-dir-display").textContent = `目录: ${currentDir}`;
+    } else {
+      console.warn('无法获取便签目录');
     }
   } catch (err) {
-    console.warn('获取或设置便签目录失败:', err);
-    // 如果出错，也提示用户设置目录
-    const directory = await window.__TAURI__.core.invoke('show_directory_picker');
-    if (directory) {
-      try {
-        const result = await window.__TAURI__.core.invoke('set_notes_directory', {
-          directory: directory
-        });
-        document.getElementById("current-dir-display").textContent = `目录: ${result}`;
-        console.log("便签目录已设置:", result);
-      } catch (setErr) {
-        console.error('设置目录失败:', setErr);
-      }
+    console.error('获取便签目录失败:', err);
+  }
+  
+  // 加载便签的位置信息
+  try {
+    const activeNotes = await window.__TAURI__.core.invoke('get_active_notes');
+    const noteDetail = activeNotes.find(note => note.id === noteId);
+    
+    if (noteDetail && noteDetail.x !== undefined && noteDetail.y !== undefined) {
+      // 恢复窗口位置
+      await win.setPosition(new window.__TAURI__.window.Position(noteDetail.x, noteDetail.y));
     }
+  } catch (err) {
+    console.warn('获取便签位置信息失败:', err);
   }
   
   // 尝试加载现有的便签内容
   try {
     const savedContent = await window.__TAURI__.core.invoke('load_note', { id: noteId });
     if (savedContent) {
-      textarea.value = savedContent;
+      // 如果内容包含Front Matter，去除它只保留实际内容
+      if (savedContent.startsWith('---')) {
+        const lines = savedContent.split('\n');
+        let contentStart = 0;
+        let frontMatterFound = false;
+        
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].trim() === '---') {
+            if (!frontMatterFound) {
+              frontMatterFound = true;
+            } else {
+              contentStart = i + 1;
+              break;
+            }
+          }
+        }
+        
+        if (contentStart > 0) {
+          // 提取内容部分
+          let actualContent = lines.slice(contentStart).join('\n');
+          // 去除开头和结尾的空行
+          actualContent = actualContent.replace(/^\s+|\s+$/g, '');
+          textarea.value = actualContent;
+        } else {
+          textarea.value = savedContent;
+        }
+      } else {
+        textarea.value = savedContent;
+      }
     }
   } catch (err) {
     console.warn('加载便签内容失败:', err);
@@ -128,33 +144,46 @@ document.addEventListener('DOMContentLoaded', async () => {
       // 设置新的定时器，在用户停止输入1秒后保存
       saveTimer = setTimeout(async () => {
         try {
-          await window.__TAURI__.core.invoke('save_note', {
+          // 获取当前位置用于创建便签
+          const position = await win.innerPosition();
+          // 创建或更新便签，如果便签不存在则创建
+          await window.__TAURI__.core.invoke('create_note', {
             id: noteId,
-            content: textarea.value
+            x: Math.round(position.x),  // 当前窗口x坐标
+            y: Math.round(position.y)   // 当前窗口y坐标
           });
-          console.log(`便签 ${noteId} 已保存`);
+          console.log(`便签 ${noteId} 已创建/更新`);
         } catch (err) {
-          console.error('保存便签失败:', err);
+          console.error('创建/更新便签失败:', err);
         }
       }, 1000); // 1秒延迟保存
     });
   }
+  
+  // 监听窗口位置变化并更新到后端
+  let positionUpdateTimer = null;
+  
+  // 监听鼠标拖拽结束事件来更新位置
+  document.addEventListener('mouseup', async () => {
+    // 防抖处理，避免频繁更新
+    if (positionUpdateTimer) {
+      clearTimeout(positionUpdateTimer);
+    }
+    
+    positionUpdateTimer = setTimeout(async () => {
+      try {
+        const position = await win.innerPosition();
+        await window.__TAURI__.core.invoke('update_note_position', {
+          id: noteId,
+          x: Math.round(position.x),
+          y: Math.round(position.y)
+        });
+        console.log(`便签 ${noteId} 位置已更新: (${position.x}, ${position.y})`);
+      } catch (err) {
+        console.error('更新便签位置失败:', err);
+      }
+    }, 500); // 500ms延迟更新
+  });
 });
 
-// 监听来自后端的设置目录请求
-window.__TAURI__.event.listen('request_set_directory', async () => {
-  const directory = await window.__TAURI__.core.invoke('show_directory_picker');
-  if (directory) {
-    try {
-      const result = await window.__TAURI__.core.invoke('set_notes_directory', {
-        directory: directory
-      });
-      document.getElementById("current-dir-display").textContent = `目录: ${result}`;
-      console.log("便签目录已设置:", result);
-    } catch (err) {
-      console.error('设置目录失败:', err);
-    }
-  } else {
-    alert("您必须选择一个目录来保存便签！");
-  }
-});
+// 移除监听来自后端的设置目录请求，因为我们不再需要手动设置目录
