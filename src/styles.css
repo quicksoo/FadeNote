@@ -58,6 +58,33 @@ html, body {
 .dot.yellow { background: #ffbd2e; }
 .dot.green { background: #28c840; }
 
+/* 设置目录按钮 */
+.header-btn {
+  height: 20px;
+  padding: 0 8px;
+  background: #e0e0e0;
+  border: none;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  margin-left: auto; /* 将按钮推到右侧 */
+}
+
+.header-btn:hover {
+  background: #d0d0d0;
+}
+
+/* 当前目录显示 */
+.dir-display {
+  font-size: 10px;
+  color: #666;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 150px;
+  margin-left: 8px;
+}
+
 /* 内容区 */
 .paper-content {
   flex: 1;
