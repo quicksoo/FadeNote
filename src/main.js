@@ -315,9 +315,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             height: size.height
           });
           
-          // 更新活动时间（窗口拖拽时）
-          await window.__TAURI__.core.invoke('update_note_activity', { id: noteId });
-          
           console.log(`便签 ${noteId} 位置和大小已更新: (${position.x}, ${position.y}, ${size.width}x${size.height})`);
         } catch (err) {
           console.error('更新便签窗口信息失败:', err);

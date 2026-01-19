@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, Utc, Local};
 use dirs::data_dir;
 use serde::{Deserialize, Serialize};
 use tauri::{Manager};
@@ -67,15 +67,15 @@ struct AppState {
 
 // 获取当前ISO 8601时间戳
 fn get_current_iso8601_time() -> String {
-    Utc::now().to_rfc3339()
+    Local::now().to_rfc3339()
 }
 
 // 检查便签是否过期
 fn is_expired(expire_at: &str) -> Result<bool, String> {
     let expire_time = DateTime::parse_from_rfc3339(expire_at)
         .map_err(|e| format!("解析过期时间失败: {}", e))?;
-    let now = Utc::now();
-    Ok(now > expire_time.naive_utc().and_local_timezone(Utc).unwrap())
+    let now = Local::now();
+    Ok(now > expire_time.naive_local().and_local_timezone(Local).unwrap())
 }
 
 // 归档便签
@@ -531,8 +531,8 @@ async fn update_note_activity(window: tauri::WebviewWindow, id: String) -> Resul
         // 计算新的过期时间：当前时间 + 7天
         let current_time = DateTime::parse_from_rfc3339(&now)
             .map_err(|e| format!("解析当前时间失败: {}", e))?;
-        let new_expire_time = (current_time.naive_utc()
-            .and_local_timezone(Utc)
+        let new_expire_time = (current_time.naive_local()
+            .and_local_timezone(Local)
             .unwrap() + Duration::days(7)).to_rfc3339();
         entry.expire_at = new_expire_time;
 
@@ -615,8 +615,8 @@ async fn save_note_content(window: tauri::WebviewWindow, id: String, content: St
         // 计算新的过期时间：当前时间 + 7天
         let current_time = DateTime::parse_from_rfc3339(&now)
             .map_err(|e| format!("解析当前时间失败: {}", e))?;
-        let new_expire_time = (current_time.naive_utc()
-            .and_local_timezone(Utc)
+        let new_expire_time = (current_time.naive_local()
+            .and_local_timezone(Local)
             .unwrap() + Duration::days(7)).to_rfc3339();
         update_entry.expire_at = new_expire_time;
         // 保存更新后的索引
@@ -761,15 +761,15 @@ pub async fn create_note_by_path(notes_dir: std::path::PathBuf, x: f64, y: f64, 
     let created_at = get_current_iso8601_time();
     let expires_at = (chrono::DateTime::parse_from_rfc3339(&created_at)
         .map_err(|e| format!("解析时间失败: {}", e))?
-        .naive_utc()
-        .and_local_timezone(chrono::Utc)
+        .naive_local()
+        .and_local_timezone(chrono::Local)
         .unwrap() + chrono::Duration::days(7)).to_rfc3339();
     
     // 创建文件内容
     let content = build_full_content(&id, &created_at, "");
     
     // 创建按日期组织的目录结构
-    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let dated_dir = notes_dir.join("notes").join(today);
     std::fs::create_dir_all(&dated_dir).map_err(|e| format!("创建日期目录失败: {}", e))?;
 
@@ -933,16 +933,16 @@ fn main() {
                             let created_at = get_current_iso8601_time();
                             // 解析创建时间并计算过期时间
                             let created_datetime = DateTime::parse_from_rfc3339(&created_at)
-                                .unwrap_or_else(|_| chrono::Utc::now().into());
-                            let expires_at = (created_datetime.naive_utc()
-                                .and_local_timezone(chrono::Utc)
+                                .unwrap_or_else(|_| chrono::Local::now().into());
+                            let expires_at = (created_datetime.naive_local()
+                                .and_local_timezone(chrono::Local)
                                 .unwrap() + chrono::Duration::days(7)).to_rfc3339();
                             
                             // 创建文件内容
                             let content = build_full_content(&id, &created_at, "");
                             
                             // 创建按日期组织的目录结构
-                            let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+                            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
                             let dated_dir = app_data_dir.join("notes").join(today);
                             std::fs::create_dir_all(&dated_dir).unwrap();
 
