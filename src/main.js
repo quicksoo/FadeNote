@@ -69,8 +69,8 @@ async function createNewNote() {
     
     console.log("创建新便签:", noteId);
     
-    // 更新活动时间
-    await window.__TAURI__.core.invoke('update_note_activity', { id: noteId });
+    // 创建便签时不更新活动时间
+    // 活动时间只在内容发生实质性改变时更新
   } catch (err) {
     console.error('创建便签失败:', err);
   }
@@ -242,14 +242,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     textarea.addEventListener('focus', async () => {
       textarea.style.backgroundColor = "#fffdf5";
       
-      // 窗口获得焦点时更新活动时间
-      if (noteId) {
-        try {
-          await window.__TAURI__.core.invoke('update_note_activity', { id: noteId });
-        } catch (err) {
-          console.error('更新便签活动时间失败:', err);
-        }
-      }
+      // 窗口获得焦点时不更新活动时间
+      // 活动时间只在内容发生实质性改变时更新
     });
     
     textarea.addEventListener('blur', () => {
