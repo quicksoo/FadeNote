@@ -47,9 +47,9 @@ struct NoteEntry {
     #[serde(rename = "lastActiveAt")]
     last_active_at: String,
     #[serde(rename = "expireAt")]
-    expire_at: String,
+    expire_at: Option<String>,
     archived: bool,
-    window: WindowInfo,
+    window: Option<WindowInfo>,
     file: FileInfo,
 }
 
@@ -71,32 +71,23 @@ fn get_current_iso8601_time() -> String {
 }
 
 // 检查便签是否过期
-fn is_expired(expire_at: &str) -> Result<bool, String> {
-    let expire_time = DateTime::parse_from_rfc3339(expire_at)
-        .map_err(|e| format!("解析过期时间失败: {}", e))?;
-    let now = Local::now();
-    Ok(now > expire_time.naive_local().and_local_timezone(Local).unwrap())
+fn is_expired(expire_at: Option<&String>) -> Result<bool, String> {
+    match expire_at {
+        Some(time_str) => {
+            let expire_time = DateTime::parse_from_rfc3339(time_str)
+                .map_err(|e| format!("解析过期时间失败: {}", e))?;
+            let now = Local::now();
+            Ok(now > expire_time.naive_local().and_local_timezone(Local).unwrap())
+        },
+        None => Ok(false), // 如果没有过期时间，则认为不过期
+    }
 }
 
 // 归档便签
-fn archive_note(notes_dir: &Path, entry: &mut NoteEntry) -> Result<(), String> {
-    let source_path = notes_dir.join(&entry.file.relative_path);
-    if !source_path.exists() {
-        return Err("源文件不存在".to_string());
-    }
-
-    // 创建archive目录
-    let archive_dir = notes_dir.join("archive");
-    fs::create_dir_all(&archive_dir).map_err(|e| format!("创建archive目录失败: {}", e))?;
-
-    // 移动文件到archive目录
-    let dest_path = archive_dir.join(source_path.file_name().unwrap());
-    fs::rename(&source_path, &dest_path).map_err(|e| format!("移动文件到archive失败: {}", e))?;
-
-    // 更新entry的文件路径
-    let archive_relative_path = format!("archive/{}", source_path.file_name().unwrap().to_string_lossy());
-    entry.file.relative_path = archive_relative_path;
+fn archive_note(_notes_dir: &Path, entry: &mut NoteEntry) -> Result<(), String> {
+    // 只更新entry的归档状态和过期时间
     entry.archived = true;
+    entry.expire_at = None; // 归档后不再需要过期时间
 
     Ok(())
 }
@@ -121,18 +112,8 @@ fn validate_and_fix_index(notes_dir: &Path) -> Result<IndexFile, String> {
         }
     };
 
-    // 遍历所有notes，检查文件是否存在
-    index.notes.retain(|entry| {
-        let file_path = notes_dir.join(&entry.file.relative_path);
-        // 保留即使文件不存在的条目，因为它们可能在其他地方
-        // 但如果文件不存在且已归档，则可以考虑删除
-        if !file_path.exists() && entry.archived {
-            println!("移除已归档且文件不存在的note: {}", entry.id);
-            false
-        } else {
-            true
-        }
-    });
+    // 不再检查文件是否存在，保留所有条目
+    // 文件不会被移动，所以不需要检查文件是否存在
 
     // 扫描notes目录下的所有文件，仅添加当前索引中不存在的文件
     // 避免重复添加已存在的便签
@@ -145,7 +126,7 @@ fn validate_and_fix_index(notes_dir: &Path) -> Result<IndexFile, String> {
 
     // 检查过期的便签并归档
     for entry in index.notes.iter_mut() {
-        if !entry.archived && is_expired(&entry.expire_at)? {
+        if !entry.archived && entry.expire_at.as_ref().map_or(false, |exp| is_expired(Some(exp)).unwrap_or(true)) {
             match archive_note(notes_dir, entry) {
                 Ok(()) => {
                     println!("便签 {} 已归档", entry.id);
@@ -195,14 +176,14 @@ fn scan_directory_for_notes_recursive(notes_dir: &Path, index: &mut IndexFile, s
                             id: parsed_id.clone(), // 修复：clone值以避免移动
                             created_at: created_time.to_rfc3339(),
                             last_active_at: created_time.to_rfc3339(),
-                            expire_at: expires_time.to_rfc3339(),
+                            expire_at: Some(expires_time.to_rfc3339()),
                             archived: false,
-                            window: WindowInfo {
+                            window: Some(WindowInfo {
                                 x: 100.0,
                                 y: 100.0,
                                 width: 280.0,
                                 height: 360.0,
-                            },
+                            }),
                             file: FileInfo {
                                 relative_path,
                             },
@@ -369,7 +350,7 @@ async fn get_active_notes(window: tauri::WebviewWindow) -> Result<Vec<NoteEntry>
 
     let mut active_notes = Vec::new();
     for entry in &index.notes {
-        if !entry.archived && !is_expired(&entry.expire_at)? {
+        if !entry.archived && !entry.expire_at.as_ref().map_or(false, |exp| is_expired(Some(exp)).unwrap_or(true)) {
             active_notes.push(entry.clone());
         }
     }
@@ -385,7 +366,7 @@ async fn get_all_unexpired_notes(window: tauri::WebviewWindow) -> Result<Vec<Not
 
     let mut unexpired_notes = Vec::new();
     for entry in &index.notes {
-        if !is_expired(&entry.expire_at)? {
+        if !entry.archived && !entry.expire_at.as_ref().map_or(false, |exp| is_expired(Some(exp)).unwrap_or(true)) {
             unexpired_notes.push(entry.clone());
         }
     }
@@ -448,14 +429,14 @@ async fn create_note(window: tauri::WebviewWindow, x: f64, y: f64, width: f64, h
         id: id.clone(),
         created_at: created_at.clone(),
         last_active_at: created_at.clone(), // 初始last_active_at就是创建时间
-        expire_at: expires_at.clone(),
+        expire_at: Some(expires_at.clone()),
         archived: false,
-        window: WindowInfo {
+        window: Some(WindowInfo {
             x,
             y,
             width,
             height,
-        },
+        }),
         file: FileInfo {
             relative_path: rel_path,
         },
@@ -534,7 +515,7 @@ async fn update_note_activity(window: tauri::WebviewWindow, id: String) -> Resul
         let new_expire_time = (current_time.naive_local()
             .and_local_timezone(Local)
             .unwrap() + Duration::days(7)).to_rfc3339();
-        entry.expire_at = new_expire_time;
+        entry.expire_at = Some(new_expire_time);
 
         // 保存更新后的索引
         index.app.name = "FadeNote".to_string(); // 确保app信息存在
@@ -618,7 +599,7 @@ async fn save_note_content(window: tauri::WebviewWindow, id: String, content: St
         let new_expire_time = (current_time.naive_local()
             .and_local_timezone(Local)
             .unwrap() + Duration::days(7)).to_rfc3339();
-        update_entry.expire_at = new_expire_time;
+        update_entry.expire_at = Some(new_expire_time);
         // 保存更新后的索引
         let json_content = serde_json::to_string_pretty(&index)
             .map_err(|e| format!("序列化索引失败: {}", e))?;
@@ -675,10 +656,20 @@ async fn update_note_window(window: tauri::WebviewWindow, id: String, x: f64, y:
     };
 
     if let Some(entry) = index.notes.iter_mut().find(|note| note.id == id) {
-        entry.window.x = x;
-        entry.window.y = y;
-        entry.window.width = width;
-        entry.window.height = height;
+        if let Some(ref mut window_info) = entry.window {
+            window_info.x = x;
+            window_info.y = y;
+            window_info.width = width;
+            window_info.height = height;
+        } else {
+            // 如果窗口信息不存在，创建一个新的
+            entry.window = Some(WindowInfo {
+                x,
+                y,
+                width,
+                height,
+            });
+        }
 
         // 保存更新后的索引
         let json_content = serde_json::to_string_pretty(&index)
@@ -738,19 +729,7 @@ pub async fn initialize_notes_directory_by_path(notes_dir: std::path::PathBuf) -
     Ok(notes_dir.to_string_lossy().to_string())
 }
 
-// 获取所有未过期的便签（通过路径）
-pub fn get_all_unexpired_notes_by_path_sync(notes_dir: std::path::PathBuf) -> Result<Vec<NoteEntry>, String> {
-    let index = validate_and_fix_index(&notes_dir)?;
 
-    let mut unexpired_notes = Vec::new();
-    for entry in &index.notes {
-        if !is_expired(&entry.expire_at)? {
-            unexpired_notes.push(entry.clone());
-        }
-    }
-
-    Ok(unexpired_notes)
-}
 
 // 创建新的便签（通过路径）
 pub async fn create_note_by_path(notes_dir: std::path::PathBuf, x: f64, y: f64, width: f64, height: f64) -> Result<String, String> {
@@ -804,14 +783,14 @@ pub async fn create_note_by_path(notes_dir: std::path::PathBuf, x: f64, y: f64, 
         id: id.clone(),
         created_at: created_at.clone(),
         last_active_at: created_at.clone(), // 初始last_active_at就是创建时间
-        expire_at: expires_at.clone(),
+        expire_at: Some(expires_at.clone()),
         archived: false,
-        window: WindowInfo {
+        window: Some(WindowInfo {
             x,
             y,
             width,
             height,
-        },
+        }),
         file: FileInfo {
             relative_path: rel_path,
         },
@@ -867,8 +846,15 @@ fn main() {
                         println!("成功初始化便签目录: {}", app_data_dir.display());
                         
                         // 获取所有未过期的便签（这会执行一次完整的验证和修复）
-                        let unexpired_notes = match get_all_unexpired_notes_by_path_sync(app_data_dir.clone()) {
-                            Ok(notes) => {
+                        let index_result = validate_and_fix_index(&app_data_dir);
+                        let unexpired_notes = match index_result {
+                            Ok(index) => {
+                                let mut notes = Vec::new();
+                                for entry in &index.notes {
+                                    if !entry.archived && !entry.expire_at.as_ref().map_or(false, |exp| is_expired(Some(exp)).unwrap_or(false)) {
+                                        notes.push(entry.clone());
+                                    }
+                                }
                                 println!("找到 {} 个未过期的便签", notes.len());
                                 notes
                             },
@@ -878,10 +864,12 @@ fn main() {
                             }
                         };
                         
+                        let mut restored_count = 0;
                         if !unexpired_notes.is_empty() {
                             // 如果有未过期的便签，恢复它们的窗口
                             for note in unexpired_notes {
-                                if !note.archived {
+                                if !note.archived && note.window.is_some() {
+                                    let window_info = note.window.as_ref().unwrap();
                                     // 创建对应窗口
                                     let label = format!("note-{}", note.id);
                                     let title = "便签";
@@ -890,18 +878,23 @@ fn main() {
                                         app.app_handle().clone(),
                                         label,
                                         title.to_string(),
-                                        note.window.width as u32,
-                                        note.window.height as u32,
-                                        Some(note.window.x as i32),
-                                        Some(note.window.y as i32),
+                                        window_info.width as u32,
+                                        window_info.height as u32,
+                                        Some(window_info.x as i32),
+                                        Some(window_info.y as i32),
                                     ).await {
-                                        Ok(_) => println!("恢复便签窗口: {}", note.id),
+                                        Ok(_) => {
+                                            println!("恢复便签窗口: {}", note.id);
+                                            restored_count += 1;
+                                        },
                                         Err(e) => eprintln!("创建便签窗口失败 {}: {}", note.id, e),
                                     }
                                 }
                             }
-                        } else {
-                            // 如果没有未过期的便签，创建一个新的默认便签窗口
+                        }
+                        
+                        // 如果没有恢复任何窗口（无论是因为没有未过期的便签还是所有便签都没有窗口信息），创建一个新的默认便签窗口
+                        if restored_count == 0 {
                             // 直接创建便签和窗口，而不使用临时窗口
                             // 创建便签
                             let index_path = app_data_dir.join("index.json");
@@ -959,14 +952,14 @@ fn main() {
                                 id: id.clone(),
                                 created_at: created_at.clone(),
                                 last_active_at: created_at.clone(), // 初始last_active_at就是创建时间
-                                expire_at: expires_at.clone(),
+                                expire_at: Some(expires_at.clone()),
                                 archived: false,
-                                window: WindowInfo {
+                                window: Some(WindowInfo {
                                     x: 100.0,
                                     y: 100.0,
                                     width: 280.0,
                                     height: 360.0,
-                                },
+                                }),
                                 file: FileInfo {
                                     relative_path: rel_path,
                                 },
