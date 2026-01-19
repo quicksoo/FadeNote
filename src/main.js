@@ -5,6 +5,21 @@ const textarea = document.querySelector(".paper-content");
 
 // 便签ID - 将在窗口准备好后从后端获取
 let noteId = null;
+let noteIdSet = false; // 标志，防止noteId被重复设置
+
+// 从URL参数中获取noteId（如果存在）
+const urlParams = new URLSearchParams(window.location.search);
+const urlNoteId = urlParams.get('noteId');
+
+// 如果URL中包含noteId，直接使用它
+if (urlNoteId) {
+  noteId = urlNoteId;
+  noteIdSet = true;
+  console.log('从URL参数获取noteId:', noteId);
+}
+
+// 全局标志，防止重复初始化
+let hasInitialized = false;
 
 // 自动保存定时器
 let saveTimer = null;
@@ -66,33 +81,49 @@ textarea.addEventListener("dblclick", async (e) => {
   e.preventDefault();
   e.stopPropagation();
 
-  const label = `note-${Date.now()}`;
-  console.log("创建新便签窗口:", label);
-
-  // 获取当前窗口的位置和尺寸
-  const position = await win.innerPosition();
-  const size = await win.innerSize();
-
   try {
-    // 使用 Tauri v2 的 invoke API 调用Rust命令
+    // 调用Rust创建新便签，这会创建便签文件和索引条目
+    const position = await win.innerPosition();
+    const size = await win.innerSize();
+    
+    const newNoteId = await window.__TAURI__.core.invoke('create_note', {
+      x: position.x + 20,
+      y: position.y + 20,
+      width: size.width,
+      height: size.height
+    });
+    
+    console.log("创建新便签成功:", newNoteId);
+    
+    // 创建对应的新窗口
+    const label = `note-${newNoteId}`;
+    console.log("创建新便签窗口:", label);
+    
     await window.__TAURI__.core.invoke('create_note_window', {
       label: label,
       title: "便签",
       width: size.width,
       height: size.height,
-      x: Math.round(position.x + 20),  // 确保坐标是整数
+      x: Math.round(position.x + 20),
       y: Math.round(position.y + 20)
     });
 
     console.log("新窗口创建成功:", label);
 
   } catch (err) {
-    console.error('创建窗口失败:', err);
+    console.error('创建新便签失败:', err);
   }
 });
 
 // 页面加载完成后初始化
 document.addEventListener('DOMContentLoaded', async () => {
+  // 防止重复初始化
+  if (hasInitialized) {
+    console.log('窗口已初始化，跳过重复初始化');
+    return;
+  }
+  hasInitialized = true;
+  
   console.log("便签窗口已加载");
   
   // 自动获取AppData目录，不再需要用户手动设置
@@ -107,15 +138,48 @@ document.addEventListener('DOMContentLoaded', async () => {
     console.error('获取便签目录失败:', err);
   }
   
-  // 尝试从后端获取便签ID
-  try {
-    // 创建新的便签
-    await createNewNote();
-  } catch (err) {
-    console.error('获取或创建便签ID失败:', err);
-    // 如果获取失败，尝试创建新的便签
-    await createNewNote();
+  // 检查当前窗口标签，如果是main窗口则不执行便签逻辑
+  let windowLabel = '';
+  
+  // 如果noteId已经通过URL参数设置，说明这是从Rust传递过来的，直接使用它
+  if (noteId && noteIdSet) {
+    // 已通过URL参数获取到noteId，无需再从窗口标签获取
+    windowLabel = `note-${noteId}`;
+    console.log('通过URL参数已知noteId，使用:', noteId);
+  } else {
+    // 如果noteId未通过URL参数设置，尝试获取窗口标签
+    try {
+      // Tauri v2中获取窗口标签
+      const currentWindow = window.__TAURI__.window.getCurrentWindow();
+      windowLabel = currentWindow.label;
+      console.log('成功获取窗口标签:', windowLabel);
+      
+      // 从窗口标签中提取noteId
+      const match = windowLabel.match(/note-(.*)/);
+      if (match && match[1]) {
+        // 这是一个note窗口，使用标签中的ID
+        noteId = match[1];
+        noteIdSet = true;
+        console.log('从窗口标签获取noteId:', noteId);
+      }
+    } catch (err) {
+      console.warn('无法获取窗口标签:', err);
+      
+      // 如果什么都无法获取，创建新note
+      console.log('无法获取窗口标签，创建新便签');
+      await createNewNote();
+      noteIdSet = true;
+      return; // 不继续执行可能出错的逻辑
+    }
   }
+  
+  if (windowLabel === 'main') {
+    console.log('主窗口加载，跳过便签逻辑');
+    return; // 主窗口不执行便签逻辑
+  }
+  
+  // 现在我们已经有了noteId，继续后续初始化
+  console.log("便签ID已设置为:", noteId);
   
   // 等待noteId被设置
   if (!noteId) {
@@ -154,6 +218,23 @@ document.addEventListener('DOMContentLoaded', async () => {
     textarea.value = "";
   }
   
+  // 监听窗口关闭事件以确保内容被保存
+  // 使用 beforeUnload 事件作为备用方案
+  window.addEventListener('beforeunload', async () => {
+    if (noteId && textarea) {
+      try {
+        // 立即保存当前内容
+        await window.__TAURI__.core.invoke('save_note_content', {
+          id: noteId,
+          content: textarea.value
+        });
+        console.log(`便签 ${noteId} 内容已保存`);
+      } catch (err) {
+        console.error('保存便签内容失败:', err);
+      }
+    }
+  });
+  
   // 添加焦点/失焦效果
   if (textarea) {
     textarea.placeholder = "写点什么…";
@@ -186,16 +267,19 @@ document.addEventListener('DOMContentLoaded', async () => {
       
       // 设置新的空闲计时器，3秒无操作后触发
       idleTimer = setTimeout(async () => {
-        if (noteId && textarea.value) {
+        if (noteId !== null) {  // 只要noteId存在就保存，无论内容是否为空
+          console.log(`开始保存便签 ${noteId}，内容长度: ${textarea.value.length}`);
           try {
             await window.__TAURI__.core.invoke('save_note_content', {
               id: noteId,
-              content: textarea.value
+              content: textarea.value  // 保存当前值，即使是空字符串
             });
             console.log(`便签 ${noteId} 内容已保存，长度: ${textarea.value.length}`);
           } catch (err) {
             console.error('保存便签内容失败:', err);
           }
+        } else {
+          console.log('noteId 为 null，跳过保存');
         }
       }, 3000); // 3秒空闲后保存
       
