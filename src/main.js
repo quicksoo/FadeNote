@@ -15,7 +15,7 @@ const urlNoteId = urlParams.get('noteId');
 if (urlNoteId) {
   noteId = urlNoteId;
   noteIdSet = true;
-  console.log('从URL参数获取noteId:', noteId);
+
 }
 
 // 全局标志，防止重复初始化
@@ -67,7 +67,7 @@ async function createNewNote() {
       height: size.height
     });
     
-    console.log("创建新便签:", noteId);
+
     
     // 创建便签时不更新活动时间
     // 活动时间只在内容发生实质性改变时更新
@@ -93,22 +93,22 @@ textarea.addEventListener("dblclick", async (e) => {
       height: size.height
     });
     
-    console.log("创建新便签成功:", newNoteId);
+
     
     // 创建对应的新窗口
     const label = `note-${newNoteId}`;
-    console.log("创建新便签窗口:", label);
+
     
     await window.__TAURI__.core.invoke('create_note_window', {
       label: label,
-      title: "便签",
+      title: "FadeNote",
       width: size.width,
       height: size.height,
       x: Math.round(position.x + 20),
       y: Math.round(position.y + 20)
     });
 
-    console.log("新窗口创建成功:", label);
+
 
   } catch (err) {
     console.error('创建新便签失败:', err);
@@ -119,12 +119,12 @@ textarea.addEventListener("dblclick", async (e) => {
 document.addEventListener('DOMContentLoaded', async () => {
   // 防止重复初始化
   if (hasInitialized) {
-    console.log('窗口已初始化，跳过重复初始化');
+
     return;
   }
   hasInitialized = true;
   
-  console.log("便签窗口已加载");
+
   
   // 自动获取AppData目录，不再需要用户手动设置
   try {
@@ -145,14 +145,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (noteId && noteIdSet) {
     // 已通过URL参数获取到noteId，无需再从窗口标签获取
     windowLabel = `note-${noteId}`;
-    console.log('通过URL参数已知noteId，使用:', noteId);
+
   } else {
     // 如果noteId未通过URL参数设置，尝试获取窗口标签
     try {
       // Tauri v2中获取窗口标签
       const currentWindow = window.__TAURI__.window.getCurrentWindow();
       windowLabel = currentWindow.label;
-      console.log('成功获取窗口标签:', windowLabel);
+
       
       // 从窗口标签中提取noteId
       const match = windowLabel.match(/note-(.*)/);
@@ -160,13 +160,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 这是一个note窗口，使用标签中的ID
         noteId = match[1];
         noteIdSet = true;
-        console.log('从窗口标签获取noteId:', noteId);
+
       }
     } catch (err) {
       console.warn('无法获取窗口标签:', err);
       
       // 如果什么都无法获取，创建新note
-      console.log('无法获取窗口标签，创建新便签');
+
       await createNewNote();
       noteIdSet = true;
       return; // 不继续执行可能出错的逻辑
@@ -174,12 +174,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   
   if (windowLabel === 'main') {
-    console.log('主窗口加载，跳过便签逻辑');
+
     return; // 主窗口不执行便签逻辑
   }
   
   // 现在我们已经有了noteId，继续后续初始化
-  console.log("便签ID已设置为:", noteId);
+
   
   // 等待noteId被设置
   if (!noteId) {
@@ -187,7 +187,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     return;
   }
   
-  console.log("便签ID:", noteId);
+
   
   // 加载便签的位置信息
   try {
@@ -228,7 +228,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           id: noteId,
           content: textarea.value
         });
-        console.log(`便签 ${noteId} 内容已保存`);
+
       } catch (err) {
         console.error('保存便签内容失败:', err);
       }
@@ -262,18 +262,18 @@ document.addEventListener('DOMContentLoaded', async () => {
       // 设置新的空闲计时器，3秒无操作后触发
       idleTimer = setTimeout(async () => {
         if (noteId !== null) {  // 只要noteId存在就保存，无论内容是否为空
-          console.log(`开始保存便签 ${noteId}，内容长度: ${textarea.value.length}`);
+
           try {
             await window.__TAURI__.core.invoke('save_note_content', {
               id: noteId,
               content: textarea.value  // 保存当前值，即使是空字符串
             });
-            console.log(`便签 ${noteId} 内容已保存，长度: ${textarea.value.length}`);
+
           } catch (err) {
             console.error('保存便签内容失败:', err);
           }
         } else {
-          console.log('noteId 为 null，跳过保存');
+
         }
       }, 3000); // 3秒空闲后保存
       
@@ -309,7 +309,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             height: size.height
           });
           
-          console.log(`便签 ${noteId} 位置和大小已更新: (${position.x}, ${position.y}, ${size.width}x${size.height})`);
+
         } catch (err) {
           console.error('更新便签窗口信息失败:', err);
         }
@@ -317,5 +317,3 @@ document.addEventListener('DOMContentLoaded', async () => {
     }, 500); // 500ms延迟更新
   });
 });
-
-// 移除监听来自后端的设置目录请求，因为我们不再需要手动设置目录

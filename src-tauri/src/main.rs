@@ -535,7 +535,7 @@ async fn update_note_activity(window: tauri::WebviewWindow, id: String) -> Resul
 async fn save_note_content(window: tauri::WebviewWindow, id: String, content: String) -> Result<(), String> {
     let notes_dir = PathBuf::from(ensure_notes_directory(window).await?);
     
-    println!("开始保存便签内容，ID: {}, 内容长度: {}", id, content.len());
+    
     
     // 从索引中获取文件路径
     let index_path = notes_dir.join("index.json");
@@ -855,7 +855,7 @@ fn main() {
                                         notes.push(entry.clone());
                                     }
                                 }
-                                println!("找到 {} 个未过期的便签", notes.len());
+                                
                                 notes
                             },
                             Err(e) => {
@@ -872,7 +872,7 @@ fn main() {
                                     let window_info = note.window.as_ref().unwrap();
                                     // 创建对应窗口
                                     let label = format!("note-{}", note.id);
-                                    let title = "便签";
+                                    let title = "FadeNote";
                                     
                                     match create_note_window(
                                         app.app_handle().clone(),
@@ -974,7 +974,7 @@ fn main() {
                             
                             // 创建对应的窗口
                             let label = format!("note-{}", id);
-                            let title = "便签";
+                            let title = "FadeNote";
                             
                             match create_note_window(
                                 app.app_handle().clone(),
