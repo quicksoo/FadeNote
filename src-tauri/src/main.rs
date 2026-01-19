@@ -1,6 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -9,6 +8,7 @@ use chrono::{DateTime, Duration, Utc};
 use dirs::data_dir;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
+use uuid::Uuid;
 
 // 获取AppData目录
 fn get_app_data_dir() -> Result<PathBuf, String> {
@@ -17,36 +17,47 @@ fn get_app_data_dir() -> Result<PathBuf, String> {
     Ok(app_data_dir)
 }
 
-// 核心数据模型
+// V2规范的数据模型
 #[derive(Serialize, Deserialize, Clone)]
-struct NoteMeta {
-    id: String,
-    #[serde(rename = "createdAt", alias = "created_at")]
+struct AppInfo {
+    name: String,
+    #[serde(rename = "createdAt")]
     created_at: String,
-    #[serde(rename = "expiresAt", alias = "expires_at")]
-    expires_at: String,
-    x: Option<f64>,
-    y: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-struct IndexNoteEntry {
-    path: String,
-    #[serde(rename = "createdAt", alias = "created_at")]
+struct WindowInfo {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct FileInfo {
+    #[serde(rename = "relativePath")]
+    relative_path: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct NoteEntry {
+    id: String,
+    #[serde(rename = "createdAt")]
     created_at: String,
-    #[serde(rename = "expiresAt", alias = "expires_at")]
-    expires_at: String,
-    #[serde(rename = "updatedAt", alias = "updated_at")]
-    updated_at: String,
+    #[serde(rename = "lastActiveAt")]
+    last_active_at: String,
+    #[serde(rename = "expireAt")]
+    expire_at: String,
     archived: bool,
+    window: WindowInfo,
+    file: FileInfo,
 }
 
 #[derive(Serialize, Deserialize)]
 struct IndexFile {
     version: u32,
-    #[serde(rename = "lastUpdatedAt", alias = "last_updated_at")]
-    last_updated_at: String,
-    notes: HashMap<String, IndexNoteEntry>,
+    app: AppInfo,
+    notes: Vec<NoteEntry>,
 }
 
 // 应用状态
@@ -60,16 +71,16 @@ fn get_current_iso8601_time() -> String {
 }
 
 // 检查便签是否过期
-fn is_expired(expires_at: &str) -> Result<bool, String> {
-    let expires_time = DateTime::parse_from_rfc3339(expires_at)
+fn is_expired(expire_at: &str) -> Result<bool, String> {
+    let expire_time = DateTime::parse_from_rfc3339(expire_at)
         .map_err(|e| format!("解析过期时间失败: {}", e))?;
     let now = Utc::now();
-    Ok(now > expires_time.naive_utc().and_local_timezone(Utc).unwrap())
+    Ok(now > expire_time.naive_utc().and_local_timezone(Utc).unwrap())
 }
 
 // 归档便签
-fn archive_note(notes_dir: &Path, _note_id: &str, entry: &IndexNoteEntry) -> Result<(), String> {
-    let source_path = notes_dir.join(&entry.path);
+fn archive_note(notes_dir: &Path, entry: &mut NoteEntry) -> Result<(), String> {
+    let source_path = notes_dir.join(&entry.file.relative_path);
     if !source_path.exists() {
         return Err("源文件不存在".to_string());
     }
@@ -81,6 +92,11 @@ fn archive_note(notes_dir: &Path, _note_id: &str, entry: &IndexNoteEntry) -> Res
     // 移动文件到archive目录
     let dest_path = archive_dir.join(source_path.file_name().unwrap());
     fs::rename(&source_path, &dest_path).map_err(|e| format!("移动文件到archive失败: {}", e))?;
+
+    // 更新entry的文件路径
+    let archive_relative_path = format!("archive/{}", source_path.file_name().unwrap().to_string_lossy());
+    entry.file.relative_path = archive_relative_path;
+    entry.archived = true;
 
     Ok(())
 }
@@ -94,135 +110,51 @@ fn validate_and_fix_index(notes_dir: &Path) -> Result<IndexFile, String> {
         serde_json::from_str(&content)
             .map_err(|e| format!("解析索引文件失败: {}", e))?
     } else {
-        // 创建新的空索引
+        // 创建新的V2索引
         IndexFile {
-            version: 1,
-            last_updated_at: get_current_iso8601_time(),
-            notes: HashMap::new(),
+            version: 2,
+            app: AppInfo {
+                name: "FadeNote".to_string(),
+                created_at: get_current_iso8601_time(),
+            },
+            notes: Vec::new(),
         }
     };
 
     // 遍历所有notes，检查文件是否存在
-    let mut to_remove = Vec::new();
-    for (id, entry) in &index.notes {
-        let file_path = notes_dir.join(&entry.path);
-        if !file_path.exists() && !entry.archived {
-            // 文件不存在但标记为未归档，添加到删除列表
-            to_remove.push(id.clone());
+    index.notes.retain(|entry| {
+        let file_path = notes_dir.join(&entry.file.relative_path);
+        // 保留即使文件不存在的条目，因为它们可能在其他地方
+        // 但如果文件不存在且已归档，则可以考虑删除
+        if !file_path.exists() && entry.archived {
+            println!("移除已归档且文件不存在的note: {}", entry.id);
+            false
+        } else {
+            true
         }
-    }
-
-    // 删除不存在的note记录
-    for id in to_remove {
-        println!("删除不存在的note记录: {}", id);
-        index.notes.remove(&id);
-    }
+    });
 
     // 扫描notes目录下的所有文件，补充缺失的索引项
     let notes_path = notes_dir.join("notes");
     if notes_path.exists() {
-        for entry in fs::read_dir(&notes_path).map_err(|e| format!("读取notes目录失败: {}", e))? {
-            let entry = entry.map_err(|e| format!("遍历文件失败: {}", e))?;
-            let path = entry.path();
-            
-            if path.is_file() && path.extension().map_or(false, |ext| ext == "md") {
-                let file_name = path.file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                
-                if !index.notes.contains_key(&file_name) {
-                    // 找到未索引的文件，添加到索引中
-                    let metadata = path.metadata().map_err(|e| format!("获取文件元数据失败: {}", e))?;
-                    let created_time = DateTime::<Utc>::from(metadata.created()
-                        .map_err(|e| format!("获取创建时间失败: {}", e))?);
-                    
-                    let expires_time = created_time + Duration::days(7);
-                    
-                    index.notes.insert(
-                        file_name.clone(),
-                        IndexNoteEntry {
-                            path: format!("notes/{}", path.file_name().unwrap().to_string_lossy()),
-                            created_at: created_time.to_rfc3339(),
-                            expires_at: expires_time.to_rfc3339(),
-                            updated_at: get_current_iso8601_time(),
-                            archived: false,
-                        }
-                    );
-                    println!("添加新发现的note到索引: {}", file_name);
-                }
-            } else if path.is_dir() {
-                // 扫描子目录（按日期组织的目录）
-                for sub_entry in fs::read_dir(&path).map_err(|e| format!("读取子目录失败: {}", e))? {
-                    let sub_entry = sub_entry.map_err(|e| format!("遍历子文件失败: {}", e))?;
-                    let sub_path = sub_entry.path();
-                    
-                    if sub_path.is_file() && sub_path.extension().map_or(false, |ext| ext == "md") {
-                        let file_name = sub_path.file_stem()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string();
-                        
-                        if !index.notes.contains_key(&file_name) {
-                            let rel_path = sub_path.strip_prefix(notes_dir)
-                                .unwrap_or(&sub_path)
-                                .to_string_lossy()
-                                .to_string();
-                            
-                            let metadata = sub_path.metadata().map_err(|e| format!("获取文件元数据失败: {}", e))?;
-                            let created_time = DateTime::<Utc>::from(metadata.created()
-                                .map_err(|e| format!("获取创建时间失败: {}", e))?);
-                            
-                            let expires_time = created_time + Duration::days(7);
-                            
-                            index.notes.insert(
-                                file_name.clone(),
-                                IndexNoteEntry {
-                                    path: rel_path,
-                                    created_at: created_time.to_rfc3339(),
-                                    expires_at: expires_time.to_rfc3339(),
-                                    updated_at: get_current_iso8601_time(),
-                                    archived: false,
-                                }
-                            );
-                            println!("添加新发现的note到索引: {}", file_name);
-                        }
-                    }
+        scan_directory_for_notes(notes_dir, &mut index, &notes_path)?;
+    }
+
+    // 检查过期的便签并归档
+    for entry in index.notes.iter_mut() {
+        if !entry.archived && is_expired(&entry.expire_at)? {
+            match archive_note(notes_dir, entry) {
+                Ok(()) => {
+                    println!("便签 {} 已归档", entry.id);
+                },
+                Err(e) => {
+                    eprintln!("归档便签 {} 失败: {}", entry.id, e);
+                    // 即使归档失败也标记为已归档，避免重复尝试
+                    entry.archived = true;
                 }
             }
         }
     }
-
-    // 检查过期的便签并归档 - 分离读取和更新步骤以避免借用冲突
-    let expired_notes: Vec<(String, IndexNoteEntry)> = index.notes
-        .iter()
-        .filter(|(_, entry)| !entry.archived && is_expired(&entry.expires_at).unwrap_or(true))
-        .map(|(id, entry)| (id.clone(), entry.clone()))
-        .collect();
-
-    for (id, entry) in expired_notes {
-        match archive_note(notes_dir, &id, &entry) {
-            Ok(()) => {
-                // 更新索引中标记为已归档
-                let mut updated_entry = entry.clone();
-                updated_entry.archived = true;
-                updated_entry.updated_at = get_current_iso8601_time();
-                index.notes.insert(id.clone(), updated_entry);
-                println!("便签 {} 已归档", id);
-            },
-            Err(e) => {
-                eprintln!("归档便签 {} 失败: {}", id, e);
-                // 即使归档失败也标记为已归档，避免重复尝试
-                let mut updated_entry = entry.clone();
-                updated_entry.archived = true;
-                updated_entry.updated_at = get_current_iso8601_time();
-                index.notes.insert(id.clone(), updated_entry);
-            }
-        }
-    }
-
-    // 更新最后更新时间
-    index.last_updated_at = get_current_iso8601_time();
 
     // 保存更新后的索引
     let json_content = serde_json::to_string_pretty(&index)
@@ -233,208 +165,135 @@ fn validate_and_fix_index(notes_dir: &Path) -> Result<IndexFile, String> {
     Ok(index)
 }
 
-// 在内容中更新位置信息
-fn update_position_in_content(content: &str, x: f64, y: f64) -> Result<String, String> {
+// 扫描目录中的便签文件
+fn scan_directory_for_notes(notes_dir: &Path, index: &mut IndexFile, scan_path: &Path) -> Result<(), String> {
+    for entry in fs::read_dir(scan_path).map_err(|e| format!("读取目录失败: {}", e))? {
+        let entry = entry.map_err(|e| format!("遍历文件失败: {}", e))?;
+        let path = entry.path();
+        
+        if path.is_file() && path.extension().map_or(false, |ext| ext == "md") {
+            let file_name = path.file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            
+            // 检查是否已经在索引中
+            if !index.notes.iter().any(|note| note.id == file_name) {
+                // 解析文件内容获取ID和其他信息
+                if let Ok(content) = fs::read_to_string(&path) {
+                    if let Some(parsed_id) = parse_id_from_content(&content) {
+                        // 检查这个ID是否已在索引中（可能在别的路径）
+                        if !index.notes.iter().any(|note| note.id == parsed_id) {
+                            let metadata = path.metadata().map_err(|e| format!("获取文件元数据失败: {}", e))?;
+                            let created_time = DateTime::<Utc>::from(metadata.created()
+                                .map_err(|e| format!("获取创建时间失败: {}", e))?);
+                            
+                            let relative_path = path.strip_prefix(notes_dir)
+                                .unwrap_or(&path)
+                                .to_string_lossy()
+                                .to_string();
+                            
+                            let expires_time = created_time + Duration::days(7);
+                            
+                            let new_entry = NoteEntry {
+                                id: parsed_id.clone(), // 修复：clone值以避免移动
+                                created_at: created_time.to_rfc3339(),
+                                last_active_at: created_time.to_rfc3339(),
+                                expire_at: expires_time.to_rfc3339(),
+                                archived: false,
+                                window: WindowInfo {
+                                    x: 100.0,
+                                    y: 100.0,
+                                    width: 280.0,
+                                    height: 360.0,
+                                },
+                                file: FileInfo {
+                                    relative_path,
+                                },
+                            };
+                            
+                            index.notes.push(new_entry);
+                            println!("添加新发现的note到索引: {}", parsed_id); // 修复：使用克隆的值
+                        }
+                    }
+                }
+            }
+        } else if path.is_dir() {
+            // 递归扫描子目录
+            scan_directory_for_notes(notes_dir, index, &path)?;
+        }
+    }
+    
+    Ok(())
+}
+
+// 从文件内容解析ID
+fn parse_id_from_content(content: &str) -> Option<String> {
+    // 查找Front Matter中的id
     let lines: Vec<&str> = content.lines().collect();
-    let mut result_lines = Vec::<String>::new();
     let mut in_front_matter = false;
-    let mut front_matter_processed = false;
-    let mut x_updated = false;
-    let mut y_updated = false;
-
-    let x_str = format!("x: {}", x);
-    let y_str = format!("y: {}", y);
-
-    let mut line_idx = 0;
-    while line_idx < lines.len() {
-        let line = lines[line_idx];
-
+    
+    for line in &lines {
         if line.trim() == "---" {
             if !in_front_matter {
                 in_front_matter = true;
-                result_lines.push(line.to_string());
-            } else {
-                // 结束front matter
-                if !x_updated {
-                    result_lines.push(x_str.clone());
-                }
-                if !y_updated {
-                    result_lines.push(y_str.clone());
-                }
-                result_lines.push(line.to_string());
-                front_matter_processed = true;
-                in_front_matter = false;
-            }
-        } else if in_front_matter {
-            if let Some(pos) = line.find(':') {
-                let key = line[..pos].trim();
-                match key {
-                    "x" => {
-                        result_lines.push(x_str.clone());
-                        x_updated = true;
-                    }
-                    "y" => {
-                        result_lines.push(y_str.clone());
-                        y_updated = true;
-                    }
-                    _ => {
-                        result_lines.push(line.to_string());
-                    }
-                }
-            } else {
-                result_lines.push(line.to_string());
-            }
-        } else {
-            // 不在front matter中，直接添加
-            if !front_matter_processed {
-                // 如果还没处理完front matter就结束了，说明没有找到结束标记
-                if !x_updated {
-                    result_lines.push(x_str.clone());
-                }
-                if !y_updated {
-                    result_lines.push(y_str.clone());
-                }
-                result_lines.push("---".to_string()); // 添加front matter结束标记
-                front_matter_processed = true;
-            }
-            result_lines.push(line.to_string());
-        }
-
-        line_idx += 1;
-    }
-
-    // 如果整个文件都没有front matter，需要添加
-    if !front_matter_processed {
-        let new_content = format!(
-            "---\nx: {}\ny: {}\n---\n{}",
-            x,
-            y,
-            content
-        );
-        return Ok(new_content);
-    }
-
-    Ok(result_lines.join("\n"))
-}
-
-// 提取内容中的位置信息
-fn extract_position_from_content(content: &str) -> (Option<f64>, Option<f64>) {
-    let mut x = None;
-    let mut y = None;
-
-    // 查找Front Matter中的位置信息
-    let lines: Vec<&str> = content.lines().collect();
-    let mut in_front_matter = false;
-    let mut line_idx = 0;
-
-    while line_idx < lines.len() {
-        let line = lines[line_idx];
-        if line.trim() == "---" {
-            if !in_front_matter {
-                in_front_matter = true; // 开始front matter
             } else {
                 break; // 结束front matter
             }
         } else if in_front_matter {
-            if let Some(pos) = line.find(':') {
-                let key = line[..pos].trim();
-                let value = line[pos + 1..].trim();
-                match key {
-                    "x" => {
-                        if let Ok(val) = value.parse::<f64>() {
-                            x = Some(val);
-                        }
-                    }
-                    "y" => {
-                        if let Ok(val) = value.parse::<f64>() {
-                            y = Some(val);
-                        }
-                    }
-                    _ => {}
+            if line.starts_with("id:") {
+                let parts: Vec<&str> = line.splitn(2, ':').collect();
+                if parts.len() == 2 {
+                    return Some(parts[1].trim().to_string());
                 }
             }
         }
-        line_idx += 1;
     }
-
-    (x, y)
+    
+    None
 }
 
-// 更新内容
-fn update_content_in_file(file_path: &Path, content: &str, x: Option<f64>, y: Option<f64>) -> Result<(), String> {
-    let existing_content = if file_path.exists() {
-        fs::read_to_string(file_path)
-            .unwrap_or_else(|_| String::new())
-    } else {
-        String::new()
-    };
-
-    let final_content = if existing_content.starts_with("---") {
-        // 如果已有front matter，只更新位置信息
-        let updated_content = if let (Some(pos_x), Some(pos_y)) = (x, y) {
-            update_position_in_content(&existing_content, pos_x, pos_y)?
-        } else {
-            existing_content
-        };
-        
-        // 在front matter之后插入实际内容
-        insert_content_after_front_matter(&updated_content, content)
-    } else {
-        // 如果没有front matter，创建新的
-        if let (Some(pos_x), Some(pos_y)) = (x, y) {
-            format!(
-                "---\nx: {}\ny: {}\n---\n{}",
-                pos_x, pos_y, content
-            )
-        } else {
-            content.to_string()
-        }
-    };
-
-    fs::write(file_path, final_content)
-        .map_err(|e| format!("写入文件失败: {}", e))
-}
-
-// 在front matter之后插入内容
-fn insert_content_after_front_matter(full_content: &str, new_content: &str) -> String {
-    let lines: Vec<&str> = full_content.lines().collect();
-    let mut result_lines = Vec::<String>::new();
+// 提取纯文本内容（去除Front Matter）
+fn extract_content_only(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
     let mut in_front_matter = false;
-    let mut front_matter_ended = false;
-    let mut line_idx = 0;
-
-    // 复制front matter部分
-    while line_idx < lines.len() {
-        let line = lines[line_idx];
-        result_lines.push(line.to_string());
-
+    let mut front_matter_end = 0;
+    
+    for (i, line) in lines.iter().enumerate() {
         if line.trim() == "---" {
             if !in_front_matter {
                 in_front_matter = true;
             } else {
-                // front matter结束
-                front_matter_ended = true;
+                // Front Matter结束
+                front_matter_end = i + 1;
                 break;
             }
         }
-        line_idx += 1;
     }
-
-    // 如果front matter已经结束，添加新内容
-    if front_matter_ended {
-        // 跳过结束的 ---
-        line_idx += 1;
+    
+    if front_matter_end > 0 && front_matter_end < lines.len() {
+        // 跳过Front Matter和第一个空行
+        let start = if front_matter_end < lines.len() && lines[front_matter_end].is_empty() {
+            front_matter_end + 1
+        } else {
+            front_matter_end
+        };
         
-        // 添加新内容，替换掉原有的内容部分
-        result_lines.push(String::new()); // 添加空行
-        result_lines.push(new_content.to_string());
-    } else {
-        // 如果没找到front matter结束，添加内容
-        result_lines.push(String::new());
-        result_lines.push(new_content.to_string());
+        if start < lines.len() {
+            let remaining_lines: Vec<String> = lines[start..].iter().map(|s| s.to_string()).collect();
+            return remaining_lines.join("\n");
+        }
     }
+    
+    content.to_string()
+}
 
-    result_lines.join("\n")
+// 构建带Front Matter的完整内容
+fn build_full_content(id: &str, created_at: &str, content: &str) -> String {
+    format!(
+        "---\nid: {}\ncreatedAt: {}\n---\n{}",
+        id, created_at, content
+    )
 }
 
 // 初始化便签目录结构
@@ -477,29 +336,16 @@ async fn ensure_notes_directory(window: tauri::WebviewWindow) -> Result<String, 
     }
 }
 
-// 获取活跃的便签列表
+// 获取活跃的便签列表（非归档的便签）
 #[tauri::command]
-async fn get_active_notes(window: tauri::WebviewWindow) -> Result<Vec<NoteMeta>, String> {
+async fn get_active_notes(window: tauri::WebviewWindow) -> Result<Vec<NoteEntry>, String> {
     let notes_dir = PathBuf::from(ensure_notes_directory(window).await?);
     let index = validate_and_fix_index(&notes_dir)?;
 
     let mut active_notes = Vec::new();
-    for (id, entry) in &index.notes {
-        if !entry.archived && !is_expired(&entry.expires_at)? {
-            // 从文件中读取位置信息
-            let file_path = notes_dir.join(&entry.path);
-            let content = fs::read_to_string(&file_path)
-                .unwrap_or_default(); // 如果读取失败则继续，不影响其他便签
-            
-            let (x, y) = extract_position_from_content(&content);
-
-            active_notes.push(NoteMeta {
-                id: id.clone(),
-                created_at: entry.created_at.clone(),
-                expires_at: entry.expires_at.clone(),
-                x,
-                y,
-            });
+    for entry in &index.notes {
+        if !entry.archived && !is_expired(&entry.expire_at)? {
+            active_notes.push(entry.clone());
         }
     }
 
@@ -508,10 +354,13 @@ async fn get_active_notes(window: tauri::WebviewWindow) -> Result<Vec<NoteMeta>,
 
 // 创建新的便签
 #[tauri::command]
-async fn create_note(window: tauri::WebviewWindow, id: String, x: Option<f64>, y: Option<f64>) -> Result<(), String> {
+async fn create_note(window: tauri::WebviewWindow, x: f64, y: f64, width: f64, height: f64) -> Result<String, String> {
     let notes_dir = PathBuf::from(ensure_notes_directory(window).await?);
     
-    // 创建带Front Matter的初始内容
+    // 生成UUID作为ID
+    let id = Uuid::new_v4().to_string();
+    
+    // 创建时间信息
     let created_at = get_current_iso8601_time();
     let expires_at = (DateTime::parse_from_rfc3339(&created_at)
         .map_err(|e| format!("解析时间失败: {}", e))?
@@ -519,15 +368,9 @@ async fn create_note(window: tauri::WebviewWindow, id: String, x: Option<f64>, y
         .and_local_timezone(Utc)
         .unwrap() + Duration::days(7)).to_rfc3339();
     
-    let content = format!(
-        "---\nid: {}\ncreatedAt: \"{}\"\nexpiresAt: \"{}\"\nx: {}\ny: {}\n---\n",
-        id,
-        created_at,
-        expires_at,
-        x.unwrap_or(100.0),
-        y.unwrap_or(100.0)
-    );
-
+    // 创建文件内容
+    let content = build_full_content(&id, &created_at, "");
+    
     // 创建按日期组织的目录结构
     let today = Utc::now().format("%Y-%m-%d").to_string();
     let dated_dir = notes_dir.join("notes").join(today);
@@ -546,9 +389,12 @@ async fn create_note(window: tauri::WebviewWindow, id: String, x: Option<f64>, y
             .map_err(|e| format!("解析索引文件失败: {}", e))?
     } else {
         IndexFile {
-            version: 1,
-            last_updated_at: get_current_iso8601_time(),
-            notes: HashMap::new(),
+            version: 2,
+            app: AppInfo {
+                name: "FadeNote".to_string(),
+                created_at: get_current_iso8601_time(),
+            },
+            notes: Vec::new(),
         }
     };
 
@@ -557,25 +403,31 @@ async fn create_note(window: tauri::WebviewWindow, id: String, x: Option<f64>, y
         .to_string_lossy()
         .to_string();
 
-    index.notes.insert(
-        id.clone(),
-        IndexNoteEntry {
-            path: rel_path,
-            created_at: created_at.clone(),
-            expires_at: expires_at.clone(),
-            updated_at: get_current_iso8601_time(),
-            archived: false,
-        }
-    );
+    let new_entry = NoteEntry {
+        id: id.clone(),
+        created_at: created_at.clone(),
+        last_active_at: created_at.clone(), // 初始last_active_at就是创建时间
+        expire_at: expires_at.clone(),
+        archived: false,
+        window: WindowInfo {
+            x,
+            y,
+            width,
+            height,
+        },
+        file: FileInfo {
+            relative_path: rel_path,
+        },
+    };
 
-    index.last_updated_at = get_current_iso8601_time();
+    index.notes.push(new_entry);
 
     let json_content = serde_json::to_string_pretty(&index)
         .map_err(|e| format!("序列化索引失败: {}", e))?;
     fs::write(&index_path, json_content)
         .map_err(|e| format!("写入索引文件失败: {}", e))?;
 
-    Ok(())
+    Ok(id)
 }
 
 // 读取便签内容
@@ -595,12 +447,14 @@ async fn load_note(window: tauri::WebviewWindow, id: String) -> Result<Option<St
             .map_err(|e| format!("解析索引文件失败: {}", e))?
     };
 
-    if let Some(entry) = index.notes.get(&id) {
-        let file_path = notes_dir.join(&entry.path);
+    // 在索引中查找该ID的便签
+    if let Some(entry) = index.notes.iter().find(|note| note.id == id && !note.archived) {
+        let file_path = notes_dir.join(&entry.file.relative_path);
         if file_path.exists() {
-            let content = fs::read_to_string(&file_path)
+            let full_content = fs::read_to_string(&file_path)
                 .map_err(|e| format!("读取便签文件失败: {}", e))?;
-            Ok(Some(content))
+            let pure_content = extract_content_only(&full_content);
+            Ok(Some(pure_content))
         } else {
             Ok(None)
         }
@@ -609,9 +463,9 @@ async fn load_note(window: tauri::WebviewWindow, id: String) -> Result<Option<St
     }
 }
 
-// 更新便签位置
+// 更新便签的活动时间
 #[tauri::command]
-async fn update_note_position(window: tauri::WebviewWindow, id: String, x: f64, y: f64) -> Result<(), String> {
+async fn update_note_activity(window: tauri::WebviewWindow, id: String) -> Result<(), String> {
     let notes_dir = PathBuf::from(ensure_notes_directory(window).await?);
     
     // 从索引中获取文件路径
@@ -627,31 +481,22 @@ async fn update_note_position(window: tauri::WebviewWindow, id: String, x: f64, 
             .map_err(|e| format!("解析索引文件失败: {}", e))?
     };
 
-    if let Some(entry) = index.notes.get(&id) {
-        let file_path = notes_dir.join(&entry.path);
+    // 查找并更新指定ID的便签
+    if let Some(entry) = index.notes.iter_mut().find(|note| note.id == id) {
+        // 更新last_active_at和expire_at
+        let now = get_current_iso8601_time();
+        entry.last_active_at = now.clone();
         
-        if !file_path.exists() {
-            return Err("便签文件不存在".to_string());
-        }
-
-        // 读取当前文件内容
-        let content = fs::read_to_string(&file_path)
-            .map_err(|e| format!("读取便签文件失败: {}", e))?;
-
-        // 更新Front Matter中的位置信息
-        let updated_content = update_position_in_content(&content, x, y)?;
-
-        // 写回文件
-        fs::write(&file_path, updated_content)
-            .map_err(|e| format!("写入便签文件失败: {}", e))?;
-
-        // 更新索引中的更新时间
-        if let Some(indexed_note) = index.notes.get_mut(&id) {
-            indexed_note.updated_at = get_current_iso8601_time();
-        }
+        // 计算新的过期时间：当前时间 + 7天
+        let current_time = DateTime::parse_from_rfc3339(&now)
+            .map_err(|e| format!("解析当前时间失败: {}", e))?;
+        let new_expire_time = (current_time.naive_utc()
+            .and_local_timezone(Utc)
+            .unwrap() + Duration::days(7)).to_rfc3339();
+        entry.expire_at = new_expire_time;
 
         // 保存更新后的索引
-        index.last_updated_at = get_current_iso8601_time();
+        index.app.name = "FadeNote".to_string(); // 确保app信息存在
         let json_content = serde_json::to_string_pretty(&index)
             .map_err(|e| format!("序列化索引失败: {}", e))?;
         fs::write(&index_path, json_content)
@@ -665,7 +510,7 @@ async fn update_note_position(window: tauri::WebviewWindow, id: String, x: f64, 
 
 // 保存便签内容
 #[tauri::command]
-async fn save_note_content(window: tauri::WebviewWindow, id: String, content: String, x: Option<f64>, y: Option<f64>) -> Result<(), String> {
+async fn save_note_content(window: tauri::WebviewWindow, id: String, content: String) -> Result<(), String> {
     let notes_dir = PathBuf::from(ensure_notes_directory(window).await?);
     
     // 从索引中获取文件路径
@@ -681,24 +526,111 @@ async fn save_note_content(window: tauri::WebviewWindow, id: String, content: St
             .map_err(|e| format!("解析索引文件失败: {}", e))?
     };
 
-    if let Some(entry) = index.notes.get(&id) {
-        let file_path = notes_dir.join(&entry.path);
+    if let Some(entry) = index.notes.iter().find(|note| note.id == id && !note.archived) {
+        let file_path = notes_dir.join(&entry.file.relative_path);
         
         if !file_path.exists() {
             return Err("便签文件不存在".to_string());
         }
 
-        // 更新文件内容
-        update_content_in_file(&file_path, &content, x, y)
-            .map_err(|e| format!("更新内容失败: {}", e))?;
+        // 读取现有Front Matter信息
+        let existing_content = fs::read_to_string(&file_path)
+            .unwrap_or_default();
+        
+        // 提取Front Matter中的ID和创建时间
+        let existing_id = if let Some(parsed_id) = parse_id_from_content(&existing_content) {
+            parsed_id
+        } else {
+            return Err("无法从文件中解析ID".to_string());
+        };
+        
+        // 保留原始的创建时间
+        let created_at = extract_created_at_from_content(&existing_content)
+            .unwrap_or_else(|| get_current_iso8601_time());
 
-        // 更新索引中的更新时间
-        if let Some(indexed_note) = index.notes.get_mut(&id) {
-            indexed_note.updated_at = get_current_iso8601_time();
+        // 构建新内容
+        let full_content = build_full_content(&existing_id, &created_at, &content);
+
+        // 写入文件
+        fs::write(&file_path, full_content)
+            .map_err(|e| format!("写入便签文件失败: {}", e))?;
+
+        // 更新活动时间
+        if let Some(update_entry) = index.notes.iter_mut().find(|note| note.id == id) {
+            let now = get_current_iso8601_time();
+            update_entry.last_active_at = now.clone();
+            
+            // 计算新的过期时间：当前时间 + 7天
+            let current_time = DateTime::parse_from_rfc3339(&now)
+                .map_err(|e| format!("解析当前时间失败: {}", e))?;
+            let new_expire_time = (current_time.naive_utc()
+                .and_local_timezone(Utc)
+                .unwrap() + Duration::days(7)).to_rfc3339();
+            update_entry.expire_at = new_expire_time;
         }
 
         // 保存更新后的索引
-        index.last_updated_at = get_current_iso8601_time();
+        let json_content = serde_json::to_string_pretty(&index)
+            .map_err(|e| format!("序列化索引失败: {}", e))?;
+        fs::write(&index_path, json_content)
+            .map_err(|e| format!("写入索引文件失败: {}", e))?;
+
+        Ok(())
+    } else {
+        Err("找不到指定的便签".to_string())
+    }
+}
+
+// 从内容中提取创建时间
+fn extract_created_at_from_content(content: &str) -> Option<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut in_front_matter = false;
+    
+    for line in &lines {
+        if line.trim() == "---" {
+            if !in_front_matter {
+                in_front_matter = true;
+            } else {
+                break; // 结束front matter
+            }
+        } else if in_front_matter {
+            if line.starts_with("createdAt:") {
+                let parts: Vec<&str> = line.splitn(2, ':').collect();
+                if parts.len() == 2 {
+                    return Some(parts[1].trim().to_string());
+                }
+            }
+        }
+    }
+    
+    None
+}
+
+// 更新窗口位置和大小
+#[tauri::command]
+async fn update_note_window(window: tauri::WebviewWindow, id: String, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
+    let notes_dir = PathBuf::from(ensure_notes_directory(window).await?);
+    
+    // 从索引中更新窗口信息
+    let index_path = notes_dir.join("index.json");
+    if !index_path.exists() {
+        return Err("索引文件不存在".to_string());
+    }
+
+    let mut index: IndexFile = {
+        let content = fs::read_to_string(&index_path)
+            .map_err(|e| format!("读取索引文件失败: {}", e))?;
+        serde_json::from_str(&content)
+            .map_err(|e| format!("解析索引文件失败: {}", e))?
+    };
+
+    if let Some(entry) = index.notes.iter_mut().find(|note| note.id == id) {
+        entry.window.x = x;
+        entry.window.y = y;
+        entry.window.width = width;
+        entry.window.height = height;
+
+        // 保存更新后的索引
         let json_content = serde_json::to_string_pretty(&index)
             .map_err(|e| format!("序列化索引失败: {}", e))?;
         fs::write(&index_path, json_content)
@@ -757,8 +689,9 @@ fn main() {
             get_active_notes,
             create_note,
             load_note,
-            update_note_position,
-            save_note_content
+            update_note_activity,
+            save_note_content,
+            update_note_window
         ])
         .setup(|app| {
             // 应用启动时初始化目录

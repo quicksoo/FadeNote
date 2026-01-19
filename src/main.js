@@ -3,19 +3,63 @@ const { getCurrentWindow } = window.__TAURI__.window;
 const win = getCurrentWindow();
 const textarea = document.querySelector(".paper-content");
 
-// 便签ID - 从窗口标签中提取
-const noteId = win.label.startsWith('note-') ? win.label : `note-${Date.now()}`;
+// 便签ID - 将在窗口准备好后从后端获取
+let noteId = null;
 
 // 自动保存定时器
 let saveTimer = null;
+let idleTimer = null;
 
-/* 顶栏按钮功能 */
-document.getElementById("btn-close").onclick = () => win.close();
-document.getElementById("btn-min").onclick = () => win.minimize();
-document.getElementById("btn-top").onclick = async () => {
-  const top = await win.isAlwaysOnTop();
-  await win.setAlwaysOnTop(!top);
-};
+/* 顶栏按钮功能 - 修复版本 */
+document.getElementById("btn-close").addEventListener('click', () => {
+  win.close();
+});
+
+document.getElementById("btn-min").addEventListener('click', () => {
+  win.minimize();
+});
+
+// 固定按钮功能
+document.getElementById("btn-top").addEventListener('click', async () => {
+  try {
+    const top = await win.isAlwaysOnTop();
+    await win.setAlwaysOnTop(!top);
+    
+    // 更新按钮样式以反映当前状态
+    const topBtn = document.getElementById("btn-top");
+    if (top) {
+      topBtn.classList.remove('active');
+      topBtn.title = "置顶";
+    } else {
+      topBtn.classList.add('active');
+      topBtn.title = "取消置顶";
+    }
+  } catch (err) {
+    console.error('切换置顶状态失败:', err);
+  }
+});
+
+// 创建新便签
+async function createNewNote() {
+  const position = await win.innerPosition();
+  const size = await win.innerSize();
+  
+  try {
+    noteId = await window.__TAURI__.core.invoke('create_note', {
+      x: position.x,
+      y: position.y,
+      width: size.width,
+      height: size.height
+    });
+    
+    console.log("创建新便签:", noteId);
+    
+    // 更新活动时间
+    await window.__TAURI__.core.invoke('update_note_activity', { id: noteId });
+  } catch (err) {
+    console.error('创建便签失败:', err);
+  }
+}
 
 /* 双击 textarea → 新建便签窗口 */
 textarea.addEventListener("dblclick", async (e) => {
@@ -50,7 +94,6 @@ textarea.addEventListener("dblclick", async (e) => {
 // 页面加载完成后初始化
 document.addEventListener('DOMContentLoaded', async () => {
   console.log("便签窗口已加载");
-  console.log("便签ID:", noteId);
   
   // 自动获取AppData目录，不再需要用户手动设置
   try {
@@ -64,14 +107,33 @@ document.addEventListener('DOMContentLoaded', async () => {
     console.error('获取便签目录失败:', err);
   }
   
+  // 尝试从后端获取便签ID
+  try {
+    // 创建新的便签
+    await createNewNote();
+  } catch (err) {
+    console.error('获取或创建便签ID失败:', err);
+    // 如果获取失败，尝试创建新的便签
+    await createNewNote();
+  }
+  
+  // 等待noteId被设置
+  if (!noteId) {
+    console.error('未能获取或创建便签ID');
+    return;
+  }
+  
+  console.log("便签ID:", noteId);
+  
   // 加载便签的位置信息
   try {
     const activeNotes = await window.__TAURI__.core.invoke('get_active_notes');
     const noteDetail = activeNotes.find(note => note.id === noteId);
     
-    if (noteDetail && noteDetail.x !== undefined && noteDetail.y !== undefined) {
-      // 恢复窗口位置
-      await win.setPosition(new window.__TAURI__.window.Position(noteDetail.x, noteDetail.y));
+    if (noteDetail) {
+      // 恢复窗口位置和大小
+      await win.setPosition(new window.__TAURI__.window.Position(noteDetail.window.x, noteDetail.window.y));
+      await win.setSize(new window.__TAURI__.window.Size(noteDetail.window.width, noteDetail.window.height));
     }
   } catch (err) {
     console.warn('获取便签位置信息失败:', err);
@@ -81,35 +143,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     const savedContent = await window.__TAURI__.core.invoke('load_note', { id: noteId });
     if (savedContent) {
-      // 如果内容包含Front Matter，去除它只保留实际内容
-      if (savedContent.startsWith('---')) {
-        const lines = savedContent.split('\n');
-        let contentStart = 0;
-        let frontMatterFound = false;
-        
-        for (let i = 0; i < lines.length; i++) {
-          if (lines[i].trim() === '---') {
-            if (!frontMatterFound) {
-              frontMatterFound = true;
-            } else {
-              contentStart = i + 1;
-              break;
-            }
-          }
-        }
-        
-        if (contentStart > 0) {
-          // 提取内容部分
-          let actualContent = lines.slice(contentStart).join('\n');
-          // 去除开头和结尾的空行
-          actualContent = actualContent.replace(/^\s+|\s+$/g, '');
-          textarea.value = actualContent;
-        } else {
-          textarea.value = savedContent;
-        }
-      } else {
-        textarea.value = savedContent;
-      }
+      textarea.value = savedContent;
     }
   } catch (err) {
     console.warn('加载便签内容失败:', err);
@@ -124,8 +158,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (textarea) {
     textarea.placeholder = "写点什么…";
     
-    textarea.addEventListener('focus', () => {
+    textarea.addEventListener('focus', async () => {
       textarea.style.backgroundColor = "#fffdf5";
+      
+      // 窗口获得焦点时更新活动时间
+      if (noteId) {
+        try {
+          await window.__TAURI__.core.invoke('update_note_activity', { id: noteId });
+        } catch (err) {
+          console.error('更新便签活动时间失败:', err);
+        }
+      }
     });
     
     textarea.addEventListener('blur', () => {
@@ -134,46 +177,39 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     });
     
-    // 监听文本变化并自动保存内容
+    // 监听文本变化（但不立即保存）
     textarea.addEventListener('input', () => {
-      // 清除之前的定时器
+      // 清除之前的空闲计时器
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+      }
+      
+      // 设置新的空闲计时器，3秒无操作后触发
+      idleTimer = setTimeout(async () => {
+        if (noteId && textarea.value) {
+          try {
+            await window.__TAURI__.core.invoke('save_note_content', {
+              id: noteId,
+              content: textarea.value
+            });
+            console.log(`便签 ${noteId} 内容已保存，长度: ${textarea.value.length}`);
+          } catch (err) {
+            console.error('保存便签内容失败:', err);
+          }
+        }
+      }, 3000); // 3秒空闲后保存
+      
+      // 清除之前的保存计时器
       if (saveTimer) {
         clearTimeout(saveTimer);
       }
-      
-      // 设置新的定时器，在用户停止输入1秒后保存
-      saveTimer = setTimeout(async () => {
-        try {
-          // 获取当前位置
-          const position = await win.innerPosition();
-          
-          // 先确保便签存在（创建或更新）
-          await window.__TAURI__.core.invoke('create_note', {
-            id: noteId,
-            x: Math.round(position.x),  // 当前窗口x坐标
-            y: Math.round(position.y)   // 当前窗口y坐标
-          });
-          
-          // 然后保存内容到该便签
-          await window.__TAURI__.core.invoke('save_note_content', {
-            id: noteId,
-            content: textarea.value,
-            x: Math.round(position.x),
-            y: Math.round(position.y)
-          });
-          
-          console.log(`便签 ${noteId} 内容已保存，长度: ${textarea.value.length}`);
-        } catch (err) {
-          console.error('保存便签内容失败:', err);
-        }
-      }, 1000); // 1秒延迟保存
     });
   }
   
   // 监听窗口位置变化并更新到后端
   let positionUpdateTimer = null;
   
-  // 监听鼠标拖拽结束事件来更新位置
+  // 监听鼠标拖拽结束事件来更新位置和活动时间
   document.addEventListener('mouseup', async () => {
     // 防抖处理，避免频繁更新
     if (positionUpdateTimer) {
@@ -181,16 +217,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     
     positionUpdateTimer = setTimeout(async () => {
-      try {
-        const position = await win.innerPosition();
-        await window.__TAURI__.core.invoke('update_note_position', {
-          id: noteId,
-          x: Math.round(position.x),
-          y: Math.round(position.y)
-        });
-        console.log(`便签 ${noteId} 位置已更新: (${position.x}, ${position.y})`);
-      } catch (err) {
-        console.error('更新便签位置失败:', err);
+      if (noteId) {
+        try {
+          const position = await win.innerPosition();
+          const size = await win.innerSize();
+          
+          // 更新窗口信息
+          await window.__TAURI__.core.invoke('update_note_window', {
+            id: noteId,
+            x: position.x,
+            y: position.y,
+            width: size.width,
+            height: size.height
+          });
+          
+          // 更新活动时间（窗口拖拽时）
+          await window.__TAURI__.core.invoke('update_note_activity', { id: noteId });
+          
+          console.log(`便签 ${noteId} 位置和大小已更新: (${position.x}, ${position.y}, ${size.width}x${size.height})`);
+        } catch (err) {
+          console.error('更新便签窗口信息失败:', err);
+        }
       }
     }, 500); // 500ms延迟更新
   });
