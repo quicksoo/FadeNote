@@ -1,82 +1,253 @@
-迭代二（V2）工程任务拆解清单（你可以直接开发）
-🧩 模块一：便签身份与生命周期（必须最先做）
+# FadeNote · Index.json V2 README（冻结版）
 
-任务 2.1｜重构 noteId 生成规则
+> 本文档是 **FadeNote V2 的宪法级实现规范**。
+>
+> 所有实现 **必须以本 README 为唯一事实来源**，禁止自行推断、补充或优化设计。
 
- 创建便签时由 Rust 生成 uuid
+---
 
- noteId 永远来自 index.json
+## 一、V2 目标与边界
 
- 窗口 label 只是映射，不是身份
+### 目标
 
-任务 2.2｜补齐 index.json 的「时间字段」
+* 稳定 index.json 为 **唯一真相源**
+* 不扫描磁盘、不遍历 md
+* 自动生命周期，不打扰用户
+* 为 V3 留出扩展空间
 
-每个 node 至少包含：
+### 明确不做（V2 禁止）
 
+* ❌ 搜索
+* ❌ 标签 / 文件夹管理
+* ❌ 手动整理
+* ❌ 批量操作
+* ❌ 从 md 反向构建 UI
+
+---
+
+## 二、index.json 顶层结构（V2 冻结）
+
+```json
 {
-  "id": "uuid",
-  "createdAt": "...",
-  "lastActiveAt": "...",
-  "expireAt": "...",
-  "archived": false
+  "version": 2,
+  "app": { ... },
+  "notes": [ ... ]
 }
+```
 
-🧩 模块二：7 天消失机制（这是 FadeNote 的灵魂）
+---
 
-任务 2.3｜定义唯一判断规则
+## 三、app 字段定义（只读元信息）
 
-7 天 = now - lastActiveAt > 7d
+```json
+"app": {
+  "name": "FadeNote",
+  "createdAt": "",
+  "rebuildAt": ""
+}
+```
 
-❌ 不是 based on 文件夹
+### 字段规则
 
-❌ 不是 based on createdAt
+* `createdAt`
 
-任务 2.4｜启动时执行一次「过期处理」
+  * 首次生成 index.json 时写入
+  * 永不修改
 
- App 启动
+* `rebuildAt`
 
- 扫描 index.json
+  * **仅在重建 index.json 时写入**
+  * 普通启动 / 更新禁止写入
 
- 标记 expired → archived
+### 铁律
 
- UI 永不再加载 archived
+> **任何业务逻辑禁止依赖 app 字段**
 
-🧩 模块三：保存策略降级（反“笔记化”）
+该字段仅用于调试、诊断、开发者判断。
 
-任务 2.5｜保存从「输入驱动」改为「行为驱动」
+---
 
-建议规则：
+## 四、note 对象（核心数据结构）
 
-输入中 → 不立刻持久化
+### 新增字段：cachedPreview
 
-以下行为才更新 lastActiveAt：
+```json
+"cachedPreview": "string | null"
+```
 
-窗口获得焦点
+### cachedPreview 宪法级规则
 
-内容发生变化并 idle ≥ 3s
+> cachedPreview 是 **UI 缓存，不是数据源**。
 
-窗口被拖拽
+#### 唯一允许的写入时机
 
-🧩 模块四：隐藏技术结构（产品层清理）
+```text
+用户编辑
+→ 内容发生实质性变化
+→ 从编辑器内存解析首行
+→ 写入 index.json.cachedPreview
+```
 
-任务 2.6｜Front Matter 仅存在于底层
+#### 严格限制
 
- JS 层永远只处理纯文本
+* 只在 **编辑态**
+* 只从 **内存** 读取
+* 只在 **内容变化** 时写入
+* ❌ 禁止读取 md
+* ❌ 禁止启动时补全
+* ❌ 禁止归档视图生成
 
- Rust 层负责拼装 / 解析 md
+---
 
- JS 不再感知 ---
+## 五、启动时强制流程（宪法级）
 
-🧩 模块五：明确「现在不做什么」（同样重要）
+```text
+1. 读取 index.json
+2. 若不存在 / 解析失败 → rebuild
+3. normalizeIndex（修正非法状态）
+4. 过期判断 → 自动归档
+5. UI 恢复（仅 window != null）
+```
 
-V2 明确不做：
+### normalizeIndex 要求
 
-❌ 搜索
+* archived=true 的 note 不得出现在桌面
+* window=null 的 note 不创建窗口
+* 非法字段值必须被修正，而不是报错
 
-❌ 标签
+---
 
-❌ 长期归档查看
+## 六、index 重建（Rebuild）宪法裁定
 
-❌ 文件夹浏览
+### 触发条件
 
-FadeNote 不是一个“我要找回以前写的东西”的产品
+* index.json 不存在
+* index.json 无法解析
+
+### 重建结果（强制）
+
+```text
+所有 note = active
+所有 window = null
+生命周期重新开始
+```
+
+### 行为要求
+
+* 不弹窗
+* 不打扰用户
+* 静默完成
+
+---
+
+## 七、系统托盘（Tray）定义
+
+```text
+FadeNote
+────────────
+New Note
+Archive
+────────────
+Settings
+Quit
+```
+
+### 规则
+
+* Archive 不与 New Note 相邻
+* Archive 是“模式切换”，不是操作
+* 桌面便签禁止任何归档入口
+
+---
+
+## 八、归档窗口（Archive View）
+
+### 定位
+
+> 归档视图 = **只读的时间回溯列表**
+
+不是管理器，不是第二工作区。
+
+### 展示内容（每条仅 3 个信息）
+
+* cachedPreview（或占位文案）
+* lastActiveAt
+* 隐含归档状态
+
+```text
+if cachedPreview exists:
+  show cachedPreview
+else:
+  show "(Archived note)"
+```
+
+### 禁止行为
+
+* ❌ 编辑
+* ❌ 删除
+* ❌ 批量操作
+* ❌ 搜索
+* ❌ 排序切换
+
+---
+
+## 九、归档视图交互铁律
+
+### 默认状态
+
+* 单击：无反应
+* Hover：轻微高亮
+* 只读
+
+### 唯一主动操作：打开
+
+#### 双击 / Enter
+
+```text
+1. 打开 md 内容
+2. 进入编辑态
+3. 内容发生实质性变化
+4. archived = false
+5. lastActiveAt = now
+6. expireAt = now + 7d
+7. 出现在桌面
+```
+
+> 系统不显示“恢复 / 复活”概念，一切自动完成。
+
+---
+
+## 十、V2 开发任务清单（按优先级）
+
+### P0（必须完成）
+
+* [ ] index.json V2 结构升级
+* [ ] app 字段写入规则实现
+* [ ] cachedPreview 写入规则实现
+* [ ] 启动强制流程实现
+* [ ] index 重建逻辑
+
+### P1（核心体验）
+
+* [ ] 系统 Tray 菜单
+* [ ] Archive 窗口创建
+* [ ] archived note 列表渲染
+* [ ] 双击打开 → 生命周期迁移
+
+### P2（稳定性）
+
+* [ ] normalizeIndex 完整覆盖
+* [ ] 非法状态容错
+* [ ] index 写入原子性保证
+
+---
+
+## 十一、最终宪法声明
+
+> **index.json 是 FadeNote 的唯一真相**
+> **UI 永远不反向解释文件系统**
+> **FadeNote 不鼓励管理，只允许发生**
+
+---
+
+（本 README 即 V2 冻结规范，非升级版本不得修改）
