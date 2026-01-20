@@ -76,7 +76,31 @@ fn get_current_iso8601_time() -> String {
     Local::now().to_rfc3339()
 }
 
-// 检查便签是否过期
+// Fix 1: 引入「Domain Query 层」（纯判断）
+// 判断便签是否已归档
+fn is_archived(entry: &NoteEntry) -> bool {
+    entry.archived_at.is_some()
+}
+
+// 判断便签是否过期
+fn is_expired_check(entry: &NoteEntry, now: &DateTime<Local>) -> bool {
+    match &entry.expire_at {
+        Some(time_str) => {
+            match DateTime::parse_from_rfc3339(time_str) {
+                Ok(expire_time) => *now > expire_time.naive_local().and_local_timezone(Local).unwrap(),
+                Err(_) => false, // 如果无法解析时间，默认不过期
+            }
+        },
+        None => false, // 如果没有过期时间，则认为不过期
+    }
+}
+
+// 判断便签是否活跃
+fn is_active(entry: &NoteEntry) -> bool {
+    entry.archived_at.is_none()
+}
+
+// 检查便签是否过期（保留原有函数供现有代码使用）
 fn is_expired(expire_at: Option<&String>) -> Result<bool, String> {
     match expire_at {
         Some(time_str) => {
@@ -89,17 +113,40 @@ fn is_expired(expire_at: Option<&String>) -> Result<bool, String> {
     }
 }
 
-// 归档便签
-fn archive_note(_notes_dir: &Path, entry: &mut NoteEntry) -> Result<(), String> {
+// Fix 2: archive_note 作为唯一状态迁移入口
+fn archive_note(entry: &mut NoteEntry, now: &DateTime<Local>) -> Result<(), String> {
     // 只更新entry的归档状态和过期时间
-    entry.status = "archived".to_string();
-    entry.archived_at = Some(get_current_iso8601_time());
+    entry.archived_at = Some(now.to_rfc3339());
     entry.expire_at = None; // 归档后不再需要过期时间
 
     Ok(())
 }
 
-// 重建索引
+// 派生状态字段
+fn derive_status(entry: &mut NoteEntry) {
+    entry.status = if entry.archived_at.is_some() {
+        "archived".to_string()
+    } else {
+        "active".to_string()
+    };
+}
+
+// RULE: lifecycle mutation only here
+// Fix 3: 新增明确的生命周期阶段 —— expire pass
+fn apply_expire_pass(index: &mut IndexFile, now: &DateTime<Local>) {
+    for entry in index.notes.iter_mut() {
+        if entry.archived_at.is_none() && is_expired_check(entry, now) {
+            // 调用唯一的归档入口
+            if let Err(e) = archive_note(entry, now) {
+                eprintln!("归档便签 {} 失败: {}", entry.id, e);
+                // 即使归档失败也标记为已归档，避免重复尝试
+                entry.archived_at = Some(now.to_rfc3339());
+            }
+        }
+    }
+}
+
+// Fix 5: 重建索引 - 不得重置生命周期
 fn rebuild_index(notes_dir: &Path) -> Result<IndexFile, String> {
     let index_path = notes_dir.join("index.json");
     
@@ -114,19 +161,29 @@ fn rebuild_index(notes_dir: &Path) -> Result<IndexFile, String> {
         notes: Vec::new(),
     };
 
+    // 加载现有的索引以保留状态信息
+    let mut existing_entries_map: std::collections::HashMap<String, NoteEntry> = std::collections::HashMap::new();
+    if index_path.exists() {
+        if let Ok(content) = fs::read_to_string(&index_path) {
+            if let Ok(existing_index) = serde_json::from_str::<IndexFile>(&content) {
+                for entry in existing_index.notes {
+                    existing_entries_map.insert(entry.id.clone(), entry);
+                }
+            }
+        }
+    }
+
     // 扫描notes目录下的所有文件并添加到索引中
     let notes_path = notes_dir.join("notes");
     if notes_path.exists() {
-        scan_directory_for_notes_rebuild(notes_dir, &mut index, &notes_path)?;
+        scan_directory_for_notes_rebuild(notes_dir, &mut index, &notes_path, &existing_entries_map)?;
     }
 
-    // 将所有便签设置为active状态，window为null（V2规范要求）
+    // 派生所有条目的状态
     for entry in &mut index.notes {
-        entry.status = "active".to_string();
-        entry.archived_at = None;
-        entry.window = None;
+        derive_status(entry);
     }
-
+    
     // 保存重建后的索引
     let json_content = serde_json::to_string_pretty(&index)
         .map_err(|e| format!("序列化索引失败: {}", e))?;
@@ -137,7 +194,7 @@ fn rebuild_index(notes_dir: &Path) -> Result<IndexFile, String> {
 }
 
 // 扫描目录中的便签文件用于重建 - 递归辅助函数
-fn scan_directory_for_notes_rebuild_recursive(notes_dir: &Path, index: &mut IndexFile, scan_path: &Path) -> Result<(), String> {
+fn scan_directory_for_notes_rebuild_recursive(notes_dir: &Path, index: &mut IndexFile, scan_path: &Path, existing_entries: &std::collections::HashMap<String, NoteEntry>) -> Result<(), String> {
     for entry in fs::read_dir(scan_path).map_err(|e| format!("读取目录失败: {}", e))? {
         let entry = entry.map_err(|e| format!("遍历文件失败: {}", e))?;
         let path = entry.path();
@@ -155,28 +212,48 @@ fn scan_directory_for_notes_rebuild_recursive(notes_dir: &Path, index: &mut Inde
                         .to_string_lossy()
                         .to_string();
                     
-                    // 对于重建，所有便签都是active状态，window为null
-                    let new_entry = NoteEntry {
+                    // 从现有条目中获取状态信息，如果不存在则为新条目设置默认值
+                    let (archived_at, expire_at, created_at, last_active_at) = if let Some(existing_entry) = existing_entries.get(&parsed_id) {
+                        (
+                            existing_entry.archived_at.clone(),
+                            existing_entry.expire_at.clone(), // 保留现有expireAt
+                            existing_entry.created_at.clone(), // 保留原始创建时间
+                            existing_entry.last_active_at.clone(), // 保留上次活跃时间
+                        )
+                    } else {
+                        (
+                            None, // 如果是新文件，archived_at为None
+                            Some((created_time + Duration::days(7)).to_rfc3339()), // 新note设置7天过期
+                            created_time.to_rfc3339(), // 使用文件创建时间
+                            created_time.to_rfc3339(), // 初始last_active_at就是创建时间
+                        )
+                    };
+                    
+                    let mut new_entry = NoteEntry {
                         id: parsed_id.clone(),
-                        created_at: created_time.to_rfc3339(),
-                        last_active_at: created_time.to_rfc3339(),
-                        expire_at: Some((created_time + Duration::days(7)).to_rfc3339()),
+                        created_at,
+                        last_active_at,
+                        expire_at,
                         cached_preview: None,
-                        status: "active".to_string(),
-                        archived_at: None,
+                        status: String::new(), // 将在保存前派生
+                        archived_at,
                         window: None,    // 重建时所有window都是null
                         file: FileInfo {
                             relative_path,
                         },
                     };
                     
+                    // 派生状态
+                    derive_status(&mut new_entry);
+                    
+                    // 重建索引时应该保留所有note，无论是否活跃
                     index.notes.push(new_entry);
                     println!("重建时添加note到索引: {}", parsed_id);
                 }
             }
         } else if path.is_dir() {
             // 递归扫描子目录
-            scan_directory_for_notes_rebuild_recursive(notes_dir, index, &path)?;
+            scan_directory_for_notes_rebuild_recursive(notes_dir, index, &path, existing_entries)?;
         }
     }
     
@@ -184,8 +261,8 @@ fn scan_directory_for_notes_rebuild_recursive(notes_dir: &Path, index: &mut Inde
 }
 
 // 扫描目录中的便签文件用于重建
-fn scan_directory_for_notes_rebuild(notes_dir: &Path, index: &mut IndexFile, scan_path: &Path) -> Result<(), String> {
-    scan_directory_for_notes_rebuild_recursive(notes_dir, index, scan_path)
+fn scan_directory_for_notes_rebuild(notes_dir: &Path, index: &mut IndexFile, scan_path: &Path, existing_entries: &std::collections::HashMap<String, NoteEntry>) -> Result<(), String> {
+    scan_directory_for_notes_rebuild_recursive(notes_dir, index, scan_path, existing_entries)
 }
 
 // 规范化索引 - 修正非法状态
@@ -257,29 +334,23 @@ fn validate_and_fix_index(notes_dir: &Path) -> Result<IndexFile, String> {
         scan_directory_for_notes(notes_dir, &mut index, &notes_path, &current_index_ids)?;
     }
 
-    // 检查过期的便签并归档
-    for entry in index.notes.iter_mut() {
-        if entry.status == "active" && entry.expire_at.as_ref().map_or(false, |exp| is_expired(Some(exp)).unwrap_or(true)) {
-            match archive_note(notes_dir, entry) {
-                Ok(()) => {
-                    println!("便签 {} 已归档", entry.id);
-                },
-                Err(e) => {
-                    eprintln!("归档便签 {} 失败: {}", entry.id, e);
-                    // 即使归档失败也标记为已归档，避免重复尝试
-                    entry.status = "archived".to_string();
-                    entry.archived_at = Some(get_current_iso8601_time());
-                }
-            }
-        }
-    }
 
+
+    // 应用过期检查
+    let now = Local::now();
+    apply_expire_pass(&mut index, &now);
+    
     // 应用规范化规则
     index = normalize_index(index);
 
     // 恢复原始的rebuildAt值，确保不会在普通更新时修改它
     index.app.rebuild_at = original_rebuild_at;
 
+    // 派生所有条目的状态（在函数结束前统一派生）
+    for entry in &mut index.notes {
+        derive_status(entry);
+    }
+    
     // 保存更新后的索引
     let json_content = serde_json::to_string_pretty(&index)
         .map_err(|e| format!("序列化索引失败: {}", e))?;
@@ -291,6 +362,30 @@ fn validate_and_fix_index(notes_dir: &Path) -> Result<IndexFile, String> {
 
 // 扫描目录中的便签文件 - 递归辅助函数
 fn scan_directory_for_notes_recursive(notes_dir: &Path, index: &mut IndexFile, scan_path: &Path, existing_ids: &mut std::collections::HashSet<String>) -> Result<(), String> {
+    // 加载现有的索引以保留状态信息
+    let index_path = notes_dir.join("index.json");
+    let mut existing_entries_map: std::collections::HashMap<String, NoteEntry> = std::collections::HashMap::new();
+    if index_path.exists() {
+        if let Ok(content) = fs::read_to_string(&index_path) {
+            if let Ok(existing_index) = serde_json::from_str::<IndexFile>(&content) {
+                for entry in existing_index.notes {
+                    existing_entries_map.insert(entry.id.clone(), entry);
+                }
+            }
+        }
+    }
+    
+    scan_directory_for_notes_recursive_with_existing(notes_dir, index, scan_path, existing_ids, &existing_entries_map)
+}
+
+// 扫描目录中的便签文件 - 递归辅助函数（实际实现）
+fn scan_directory_for_notes_recursive_with_existing(
+    notes_dir: &Path, 
+    index: &mut IndexFile, 
+    scan_path: &Path, 
+    existing_ids: &mut std::collections::HashSet<String>,
+    existing_entries: &std::collections::HashMap<String, NoteEntry>
+) -> Result<(), String> {
     for entry in fs::read_dir(scan_path).map_err(|e| format!("读取目录失败: {}", e))? {
         let entry = entry.map_err(|e| format!("遍历文件失败: {}", e))?;
         let path = entry.path();
@@ -310,16 +405,23 @@ fn scan_directory_for_notes_recursive(notes_dir: &Path, index: &mut IndexFile, s
                             .to_string_lossy()
                             .to_string();
                         
-                        let expires_time = created_time + Duration::days(7);
+                        // 从现有条目中获取状态信息，如果不存在则为新条目设置默认值
+                        let (archived_at, expire_at) = if let Some(existing_entry) = existing_entries.get(&parsed_id) {
+                            (existing_entry.archived_at.clone(), existing_entry.expire_at.clone())
+                        } else {
+                            // 新文件：设置7天过期时间，archived_at为None
+                            let expires_time = created_time + Duration::days(7);
+                            (None, Some(expires_time.to_rfc3339()))
+                        };
                         
-                        let new_entry = NoteEntry {
+                        let mut new_entry = NoteEntry {
                             id: parsed_id.clone(), // 修复：clone值以避免移动
                             created_at: created_time.to_rfc3339(),
                             last_active_at: created_time.to_rfc3339(),
-                            expire_at: Some(expires_time.to_rfc3339()),
+                            expire_at,
                             cached_preview: None,
-                            status: "active".to_string(),
-                            archived_at: None,
+                            status: String::new(), // 这将在保存前被派生
+                            archived_at,
                             window: Some(WindowInfo {
                                 x: 100.0,
                                 y: 100.0,
@@ -331,6 +433,10 @@ fn scan_directory_for_notes_recursive(notes_dir: &Path, index: &mut IndexFile, s
                             },
                         };
                         
+                        // 派生状态
+                        derive_status(&mut new_entry);
+                        
+                        // 添加note到索引中（扫描时保留所有note，不管是否活跃）
                         index.notes.push(new_entry);
                         existing_ids.insert(parsed_id.clone()); // 添加到已知ID集合
                         println!("添加新发现的note到索引: {}", parsed_id); // 修复：使用克隆的值
@@ -339,7 +445,7 @@ fn scan_directory_for_notes_recursive(notes_dir: &Path, index: &mut IndexFile, s
             }
         } else if path.is_dir() {
             // 递归扫描子目录
-            scan_directory_for_notes_recursive(notes_dir, index, &path, existing_ids)?;
+            scan_directory_for_notes_recursive_with_existing(notes_dir, index, &path, existing_ids, existing_entries)?;
         }
     }
     
@@ -487,33 +593,23 @@ async fn ensure_notes_directory(window: tauri::WebviewWindow) -> Result<String, 
 // 获取活跃的便签列表（非归档的便签）
 #[tauri::command]
 async fn get_active_notes(window: tauri::WebviewWindow) -> Result<Vec<NoteEntry>, String> {
+    get_all_active_notes(window).await
+}
+
+// 获取所有活跃的便签
+#[tauri::command]
+async fn get_all_active_notes(window: tauri::WebviewWindow) -> Result<Vec<NoteEntry>, String> {
     let notes_dir = PathBuf::from(ensure_notes_directory(window).await?);
     let index = validate_and_fix_index(&notes_dir)?;
 
     let mut active_notes = Vec::new();
     for entry in &index.notes {
-        if entry.status == "active" && !entry.expire_at.as_ref().map_or(false, |exp| is_expired(Some(exp)).unwrap_or(true)) {
+        if is_active(entry) {
             active_notes.push(entry.clone());
         }
     }
 
     Ok(active_notes)
-}
-
-// 获取所有未过期的便签
-#[tauri::command]
-async fn get_all_unexpired_notes(window: tauri::WebviewWindow) -> Result<Vec<NoteEntry>, String> {
-    let notes_dir = PathBuf::from(ensure_notes_directory(window).await?);
-    let index = validate_and_fix_index(&notes_dir)?;
-
-    let mut unexpired_notes = Vec::new();
-    for entry in &index.notes {
-        if entry.status == "active" && !entry.expire_at.as_ref().map_or(false, |exp| is_expired(Some(exp)).unwrap_or(true)) {
-            unexpired_notes.push(entry.clone());
-        }
-    }
-
-    Ok(unexpired_notes)
 }
 
 // 创建新的便签
@@ -568,13 +664,13 @@ async fn create_note(window: tauri::WebviewWindow, x: f64, y: f64, width: f64, h
         .to_string_lossy()
         .to_string();
 
-    let new_entry = NoteEntry {
+    let mut new_entry = NoteEntry {
         id: id.clone(),
         created_at: created_at.clone(),
         last_active_at: created_at.clone(), // 初始last_active_at就是创建时间
         expire_at: Some(expires_at.clone()),
         cached_preview: None,
-        status: "active".to_string(),
+        status: String::new(), // 禁止手写，将在派生时设置
         archived_at: None,
         window: Some(WindowInfo {
             x,
@@ -586,7 +682,10 @@ async fn create_note(window: tauri::WebviewWindow, x: f64, y: f64, width: f64, h
             relative_path: rel_path,
         },
     };
-
+    
+    // 派生状态
+    derive_status(&mut new_entry);
+    
     index.notes.push(new_entry);
 
     let json_content = serde_json::to_string_pretty(&index)
@@ -615,7 +714,12 @@ async fn load_note(window: tauri::WebviewWindow, id: String) -> Result<Option<St
     };
 
     // 在索引中查找该ID的便签
-    if let Some(entry) = index.notes.iter().find(|note| note.id == id && note.status == "active") {
+    let note = index.notes.iter().find(|note| note.id == id);
+    
+    if let Some(entry) = note {
+        if !is_active(entry) {
+            return Ok(None);
+        }
         let file_path = notes_dir.join(&entry.file.relative_path);
         if file_path.exists() {
             let full_content = fs::read_to_string(&file_path)
@@ -650,6 +754,9 @@ async fn update_note_activity(window: tauri::WebviewWindow, id: String) -> Resul
 
     // 查找并更新指定ID的便签
     if let Some(entry) = index.notes.iter_mut().find(|note| note.id == id) {
+        if !is_active(entry) {
+            return Err("note archived".to_string());
+        }
         // 更新last_active_at和expire_at
         let now = get_current_iso8601_time();
         entry.last_active_at = now.clone();
@@ -661,6 +768,53 @@ async fn update_note_activity(window: tauri::WebviewWindow, id: String) -> Resul
             .and_local_timezone(Local)
             .unwrap() + Duration::days(7)).to_rfc3339();
         entry.expire_at = Some(new_expire_time);
+
+        // 保存更新后的索引
+        index.app.name = "FadeNote".to_string(); // 确保app信息存在
+        // 不修改rebuildAt字段（V2规范：普通启动/更新禁止写入rebuildAt）
+        let json_content = serde_json::to_string_pretty(&index)
+            .map_err(|e| format!("序列化索引失败: {}", e))?;
+        fs::write(&index_path, json_content)
+            .map_err(|e| format!("写入索引文件失败: {}", e))?;
+
+        Ok(())
+    } else {
+        Err("找不到指定的便签".to_string())
+    }
+}
+
+// 恢复便签条目
+fn restore_note_entry(entry: &mut NoteEntry) {
+    entry.archived_at = None;
+    // 设置新的过期时间为7天后
+    let now = Local::now();
+    let new_expire_time = (now + Duration::days(7)).to_rfc3339();
+    entry.expire_at = Some(new_expire_time);
+}
+
+// 恢复归档的便签
+#[tauri::command]
+async fn restore_note(window: tauri::WebviewWindow, id: String) -> Result<(), String> {
+    let notes_dir = PathBuf::from(ensure_notes_directory(window).await?);
+    
+    // 从索引中获取文件路径
+    let index_path = notes_dir.join("index.json");
+    if !index_path.exists() {
+        return Err("索引文件不存在".to_string());
+    }
+
+    let mut index: IndexFile = {
+        let content = fs::read_to_string(&index_path)
+            .map_err(|e| format!("读取索引文件失败: {}", e))?;
+        serde_json::from_str(&content)
+            .map_err(|e| format!("解析索引文件失败: {}", e))?
+    };
+
+    // 查找并恢复指定ID的便签
+    if let Some(entry) = index.notes.iter_mut().find(|note| note.id == id) {
+        if entry.archived_at.is_some() {
+            restore_note_entry(entry);
+        }
 
         // 保存更新后的索引
         index.app.name = "FadeNote".to_string(); // 确保app信息存在
@@ -696,14 +850,9 @@ async fn save_note_content(window: tauri::WebviewWindow, id: String, content: St
             .map_err(|e| format!("解析索引文件失败: {}", e))?
     };
 
-    // 先检查便签是否存在且未归档
-    if !index.notes.iter().any(|note| note.id == id && note.status == "active") {
-        return Err("找不到指定的便签或便签已被归档".to_string());
-    }
-    
     // 查找并更新活动时间
     if let Some(update_entry) = index.notes.iter_mut().find(|note| note.id == id) {
-        if update_entry.status == "archived" {
+        if !is_active(update_entry) {
             return Err("便签已被归档，无法更新".to_string());
         }
         
@@ -749,6 +898,12 @@ async fn save_note_content(window: tauri::WebviewWindow, id: String, content: St
         
         // 更新cachedPreview：从内容中提取第一行作为预览
         update_entry.cached_preview = extract_first_line_preview(&content);
+        
+        // 派生所有条目的状态（只在这里调用）
+        for entry in &mut index.notes {
+            derive_status(entry);
+        }
+        
         // 保存更新后的索引
         let json_content = serde_json::to_string_pretty(&index)
             .map_err(|e| format!("序列化索引失败: {}", e))?;
@@ -836,7 +991,12 @@ async fn update_note_window(window: tauri::WebviewWindow, id: String, x: f64, y:
                 height,
             });
         }
-
+        
+        // 派生所有条目的状态（只在这里调用）
+        for entry in &mut index.notes {
+            derive_status(entry);
+        }
+        
         // 保存更新后的索引
         let json_content = serde_json::to_string_pretty(&index)
             .map_err(|e| format!("序列化索引失败: {}", e))?;
@@ -946,13 +1106,13 @@ pub async fn create_note_by_path(notes_dir: std::path::PathBuf, x: f64, y: f64, 
         .to_string_lossy()
         .to_string();
 
-    let new_entry = NoteEntry {
+    let mut new_entry = NoteEntry {
         id: id.clone(),
         created_at: created_at.clone(),
         last_active_at: created_at.clone(), // 初始last_active_at就是创建时间
         expire_at: Some(expires_at.clone()),
         cached_preview: None,
-        status: "active".to_string(),
+        status: String::new(), // 禁止手写，将在派生时设置
         archived_at: None,
         window: Some(WindowInfo {
             x,
@@ -964,7 +1124,10 @@ pub async fn create_note_by_path(notes_dir: std::path::PathBuf, x: f64, y: f64, 
             relative_path: rel_path,
         },
     };
-
+    
+    // 派生状态
+    derive_status(&mut new_entry);
+    
     index.notes.push(new_entry);
 
     let json_content = serde_json::to_string_pretty(&index)
@@ -978,7 +1141,9 @@ pub async fn create_note_by_path(notes_dir: std::path::PathBuf, x: f64, y: f64, 
 // 检查是否有未过期的便签
 #[tauri::command]
 async fn has_unexpired_notes(window: tauri::WebviewWindow) -> Result<bool, String> {
-    let unexpired_notes = get_all_unexpired_notes(window).await?;
+    let active_notes = get_all_active_notes(window).await?;
+    let now = Local::now();
+    let unexpired_notes: Vec<_> = active_notes.into_iter().filter(|e| !is_expired_check(e, &now)).collect();
     Ok(!unexpired_notes.is_empty())
 }
 
@@ -994,13 +1159,14 @@ fn main() {
             initialize_notes_directory,
             ensure_notes_directory,
             get_active_notes,
-            get_all_unexpired_notes,
+            get_all_active_notes,
             has_unexpired_notes,
             create_note,
             load_note,
             update_note_activity,
             save_note_content,
-            update_note_window
+            update_note_window,
+            restore_note
         ])
         .setup(|app| {
             // 创建系统托盘菜单项
@@ -1071,30 +1237,49 @@ fn main() {
                     Ok(_) => {
                         println!("成功初始化便签目录: {}", app_data_dir.display());
                         
-                        // 获取所有未过期的便签（这会执行一次完整的验证和修复）
-                        let index_result = validate_and_fix_index(&app_data_dir);
-                        let unexpired_notes = match index_result {
-                            Ok(index) => {
-                                let mut notes = Vec::new();
-                                for entry in &index.notes {
-                                    if entry.status == "active" && !entry.expire_at.as_ref().map_or(false, |exp| is_expired(Some(exp)).unwrap_or(false)) {
-                                        notes.push(entry.clone());
-                                    }
-                                }
-                                
-                                notes
-                            },
+                        // Fix 6: 启动流程遵循正确顺序
+                        // 1. Load index
+                        let mut index = match validate_and_fix_index(&app_data_dir) {
+                            Ok(idx) => idx,
                             Err(e) => {
-                                eprintln!("获取未过期便签失败: {}", e);
-                                vec![]
+                                eprintln!("验证和修复索引失败: {}", e);
+                                IndexFile {
+                                    version: 2,
+                                    app: AppInfo {
+                                        name: "FadeNote".to_string(),
+                                        created_at: get_current_iso8601_time(),
+                                        rebuild_at: None,
+                                    },
+                                    notes: Vec::new(),
+                                }
                             }
                         };
                         
+                        // 2. Apply expire pass (生命周期变化)
+                        let now = Local::now();
+                        apply_expire_pass(&mut index, &now);
+                        
+                        // 3. Save index
+                        let index_path = app_data_dir.join("index.json");
+                        if let Ok(json_content) = serde_json::to_string_pretty(&index) {
+                            let _ = std::fs::write(&index_path, json_content);
+                        }
+                        
+                        // 4. Get active notes for restoration
+                        let mut active_notes = Vec::new();
+                        for entry in &index.notes {
+                            if is_active(entry) {  // 使用统一的is_active函数
+                                active_notes.push(entry.clone());
+                            }
+                        }
+                                                
+                        let unexpired_notes = active_notes;
+                                                 
                         let mut restored_count = 0;
                         if !unexpired_notes.is_empty() {
                             // 如果有未过期的便签，恢复它们的窗口
                             for note in unexpired_notes {
-                                if note.status == "active" && note.window.is_some() {
+                                if is_active(&note) && note.window.is_some() { // note是owned value，&note取引用
                                     let window_info = note.window.as_ref().unwrap();
                                     // 创建对应窗口
                                     let label = format!("note-{}", note.id);
@@ -1176,13 +1361,13 @@ fn main() {
                                 .to_string_lossy()
                                 .to_string();
 
-                            let new_entry = NoteEntry {
+                            let mut new_entry = NoteEntry {
                                 id: id.clone(),
                                 created_at: created_at.clone(),
                                 last_active_at: created_at.clone(), // 初始last_active_at就是创建时间
                                 expire_at: Some(expires_at.clone()),
                                 cached_preview: None,
-                                status: "active".to_string(),
+                                status: String::new(), // 禁止手写，将在派生时设置
                                 archived_at: None,
                                 window: Some(WindowInfo {
                                     x: 100.0,
@@ -1194,6 +1379,9 @@ fn main() {
                                     relative_path: rel_path,
                                 },
                             };
+                            
+                            // 派生状态
+                            derive_status(&mut new_entry);
 
                             index.notes.push(new_entry);
 
