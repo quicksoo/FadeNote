@@ -23,6 +23,8 @@ struct AppInfo {
     name: String,
     #[serde(rename = "createdAt")]
     created_at: String,
+    #[serde(rename = "rebuildAt")]
+    rebuild_at: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -48,6 +50,8 @@ struct NoteEntry {
     last_active_at: String,
     #[serde(rename = "expireAt")]
     expire_at: Option<String>,
+    #[serde(rename = "cachedPreview")]
+    cached_preview: Option<String>,
     archived: bool,
     window: Option<WindowInfo>,
     file: FileInfo,
@@ -92,25 +96,149 @@ fn archive_note(_notes_dir: &Path, entry: &mut NoteEntry) -> Result<(), String> 
     Ok(())
 }
 
+// 重建索引
+fn rebuild_index(notes_dir: &Path) -> Result<IndexFile, String> {
+    let index_path = notes_dir.join("index.json");
+    
+    // 创建新的V2索引 - 这是重建操作，需要设置rebuildAt
+    let mut index = IndexFile {
+        version: 2,
+        app: AppInfo {
+            name: "FadeNote".to_string(),
+            created_at: get_current_iso8601_time(),
+            rebuild_at: Some(get_current_iso8601_time()), // 仅在重建时设置rebuildAt
+        },
+        notes: Vec::new(),
+    };
+
+    // 扫描notes目录下的所有文件并添加到索引中
+    let notes_path = notes_dir.join("notes");
+    if notes_path.exists() {
+        scan_directory_for_notes_rebuild(notes_dir, &mut index, &notes_path)?;
+    }
+
+    // 将所有便签设置为active状态，window为null（V2规范要求）
+    for entry in &mut index.notes {
+        entry.archived = false;
+        entry.window = None;
+    }
+
+    // 保存重建后的索引
+    let json_content = serde_json::to_string_pretty(&index)
+        .map_err(|e| format!("序列化索引失败: {}", e))?;
+    fs::write(&index_path, json_content)
+        .map_err(|e| format!("写入索引文件失败: {}", e))?;
+
+    Ok(index)
+}
+
+// 扫描目录中的便签文件用于重建 - 递归辅助函数
+fn scan_directory_for_notes_rebuild_recursive(notes_dir: &Path, index: &mut IndexFile, scan_path: &Path) -> Result<(), String> {
+    for entry in fs::read_dir(scan_path).map_err(|e| format!("读取目录失败: {}", e))? {
+        let entry = entry.map_err(|e| format!("遍历文件失败: {}", e))?;
+        let path = entry.path();
+        
+        if path.is_file() && path.extension().map_or(false, |ext| ext == "md") {
+            // 解析文件内容获取ID和其他信息
+            if let Ok(content) = fs::read_to_string(&path) {
+                if let Some(parsed_id) = parse_id_from_content(&content) {
+                    let metadata = path.metadata().map_err(|e| format!("获取文件元数据失败: {}", e))?;
+                    let created_time = DateTime::<Utc>::from(metadata.created()
+                        .map_err(|e| format!("获取创建时间失败: {}", e))?);
+                    
+                    let relative_path = path.strip_prefix(notes_dir)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .to_string();
+                    
+                    // 对于重建，所有便签都是active状态，window为null
+                    let new_entry = NoteEntry {
+                        id: parsed_id.clone(),
+                        created_at: created_time.to_rfc3339(),
+                        last_active_at: created_time.to_rfc3339(),
+                        expire_at: Some((created_time + Duration::days(7)).to_rfc3339()),
+                        cached_preview: None,
+                        archived: false, // 重建时所有note都是active
+                        window: None,    // 重建时所有window都是null
+                        file: FileInfo {
+                            relative_path,
+                        },
+                    };
+                    
+                    index.notes.push(new_entry);
+                    println!("重建时添加note到索引: {}", parsed_id);
+                }
+            }
+        } else if path.is_dir() {
+            // 递归扫描子目录
+            scan_directory_for_notes_rebuild_recursive(notes_dir, index, &path)?;
+        }
+    }
+    
+    Ok(())
+}
+
+// 扫描目录中的便签文件用于重建
+fn scan_directory_for_notes_rebuild(notes_dir: &Path, index: &mut IndexFile, scan_path: &Path) -> Result<(), String> {
+    scan_directory_for_notes_rebuild_recursive(notes_dir, index, scan_path)
+}
+
+// 规范化索引 - 修正非法状态
+fn normalize_index(mut index: IndexFile) -> IndexFile {
+    // archived=true 的 note 不得出现在桌面
+    // 这意味着这些note不应该被当作活跃的便签处理
+    // 我们保留它们在索引中，但它们不会在正常操作中被使用
+    
+    // window=null 的 note 不创建窗口
+    // 在窗口恢复逻辑中已经处理了这一点
+    
+    // 修正非法字段值
+    for entry in &mut index.notes {
+        // 确保ID有效
+        if entry.id.is_empty() {
+            entry.id = Uuid::new_v4().to_string();
+        }
+        
+        // 确保时间字段格式正确
+        if entry.created_at.is_empty() {
+            entry.created_at = get_current_iso8601_time();
+        }
+        
+        if entry.last_active_at.is_empty() {
+            entry.last_active_at = get_current_iso8601_time();
+        }
+        
+        // 确保文件路径有效
+        if entry.file.relative_path.is_empty() {
+            entry.file.relative_path = format!("notes/unknown/{}.md", entry.id);
+        }
+    }
+    
+    index
+}
+
 // 验证并修复索引
 fn validate_and_fix_index(notes_dir: &Path) -> Result<IndexFile, String> {
     let index_path = notes_dir.join("index.json");
     let mut index: IndexFile = if index_path.exists() {
         let content = fs::read_to_string(&index_path)
             .map_err(|e| format!("读取索引文件失败: {}", e))?;
-        serde_json::from_str(&content)
-            .map_err(|e| format!("解析索引文件失败: {}", e))?
-    } else {
-        // 创建新的V2索引
-        IndexFile {
-            version: 2,
-            app: AppInfo {
-                name: "FadeNote".to_string(),
-                created_at: get_current_iso8601_time(),
-            },
-            notes: Vec::new(),
+        match serde_json::from_str::<IndexFile>(&content) {
+            Ok(parsed_index) => parsed_index,
+            Err(_) => {
+                // 如果解析失败，执行重建
+                println!("索引文件解析失败，执行重建...");
+                return rebuild_index(notes_dir);
+            }
         }
+    } else {
+        // 如果不存在，执行重建
+        println!("索引文件不存在，执行重建...");
+        return rebuild_index(notes_dir);
     };
+
+    // 保留原有的rebuildAt值，不进行修改（V2规范：普通启动/更新禁止写入rebuildAt）
+    let original_rebuild_at = index.app.rebuild_at.clone();
 
     // 不再检查文件是否存在，保留所有条目
     // 文件不会被移动，所以不需要检查文件是否存在
@@ -139,6 +267,12 @@ fn validate_and_fix_index(notes_dir: &Path) -> Result<IndexFile, String> {
             }
         }
     }
+
+    // 应用规范化规则
+    index = normalize_index(index);
+
+    // 恢复原始的rebuildAt值，确保不会在普通更新时修改它
+    index.app.rebuild_at = original_rebuild_at;
 
     // 保存更新后的索引
     let json_content = serde_json::to_string_pretty(&index)
@@ -177,6 +311,7 @@ fn scan_directory_for_notes_recursive(notes_dir: &Path, index: &mut IndexFile, s
                             created_at: created_time.to_rfc3339(),
                             last_active_at: created_time.to_rfc3339(),
                             expire_at: Some(expires_time.to_rfc3339()),
+                            cached_preview: None,
                             archived: false,
                             window: Some(WindowInfo {
                                 x: 100.0,
@@ -415,6 +550,7 @@ async fn create_note(window: tauri::WebviewWindow, x: f64, y: f64, width: f64, h
             app: AppInfo {
                 name: "FadeNote".to_string(),
                 created_at: get_current_iso8601_time(),
+                rebuild_at: None,
             },
             notes: Vec::new(),
         }
@@ -430,6 +566,7 @@ async fn create_note(window: tauri::WebviewWindow, x: f64, y: f64, width: f64, h
         created_at: created_at.clone(),
         last_active_at: created_at.clone(), // 初始last_active_at就是创建时间
         expire_at: Some(expires_at.clone()),
+        cached_preview: None,
         archived: false,
         window: Some(WindowInfo {
             x,
@@ -519,6 +656,7 @@ async fn update_note_activity(window: tauri::WebviewWindow, id: String) -> Resul
 
         // 保存更新后的索引
         index.app.name = "FadeNote".to_string(); // 确保app信息存在
+        // 不修改rebuildAt字段（V2规范：普通启动/更新禁止写入rebuildAt）
         let json_content = serde_json::to_string_pretty(&index)
             .map_err(|e| format!("序列化索引失败: {}", e))?;
         fs::write(&index_path, json_content)
@@ -600,6 +738,9 @@ async fn save_note_content(window: tauri::WebviewWindow, id: String, content: St
             .and_local_timezone(Local)
             .unwrap() + Duration::days(7)).to_rfc3339();
         update_entry.expire_at = Some(new_expire_time);
+        
+        // 更新cachedPreview：从内容中提取第一行作为预览
+        update_entry.cached_preview = extract_first_line_preview(&content);
         // 保存更新后的索引
         let json_content = serde_json::to_string_pretty(&index)
             .map_err(|e| format!("序列化索引失败: {}", e))?;
@@ -610,6 +751,23 @@ async fn save_note_content(window: tauri::WebviewWindow, id: String, content: St
     } else {
         Err("找不到指定的便签".to_string())
     }
+}
+
+// 提取内容预览：从内容中提取第一行作为预览
+fn extract_first_line_preview(content: &str) -> Option<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    
+    // 跳过空行，找到第一个非空行
+    for line in lines {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            // 限制预览长度为50个字符
+            return Some(trimmed.chars().take(50).collect());
+        }
+    }
+    
+    // 如果没有找到非空行，返回None
+    None
 }
 
 // 从内容中提取创建时间
@@ -769,6 +927,7 @@ pub async fn create_note_by_path(notes_dir: std::path::PathBuf, x: f64, y: f64, 
             app: AppInfo {
                 name: "FadeNote".to_string(),
                 created_at: get_current_iso8601_time(),
+                rebuild_at: None,
             },
             notes: Vec::new(),
         }
@@ -784,6 +943,7 @@ pub async fn create_note_by_path(notes_dir: std::path::PathBuf, x: f64, y: f64, 
         created_at: created_at.clone(),
         last_active_at: created_at.clone(), // 初始last_active_at就是创建时间
         expire_at: Some(expires_at.clone()),
+        cached_preview: None,
         archived: false,
         window: Some(WindowInfo {
             x,
@@ -905,6 +1065,7 @@ fn main() {
                                     app: AppInfo {
                                         name: "FadeNote".to_string(),
                                         created_at: get_current_iso8601_time(),
+                                        rebuild_at: None,
                                     },
                                     notes: Vec::new(),
                                 })
@@ -914,6 +1075,7 @@ fn main() {
                                     app: AppInfo {
                                         name: "FadeNote".to_string(),
                                         created_at: get_current_iso8601_time(),
+                                        rebuild_at: None,
                                     },
                                     notes: Vec::new(),
                                 }
@@ -953,6 +1115,7 @@ fn main() {
                                 created_at: created_at.clone(),
                                 last_active_at: created_at.clone(), // 初始last_active_at就是创建时间
                                 expire_at: Some(expires_at.clone()),
+                                cached_preview: None,
                                 archived: false,
                                 window: Some(WindowInfo {
                                     x: 100.0,
