@@ -52,7 +52,9 @@ struct NoteEntry {
     expire_at: Option<String>,
     #[serde(rename = "cachedPreview")]
     cached_preview: Option<String>,
-    archived: bool,
+    status: String,
+    #[serde(rename = "archivedAt")]
+    archived_at: Option<String>,
     window: Option<WindowInfo>,
     file: FileInfo,
 }
@@ -90,7 +92,8 @@ fn is_expired(expire_at: Option<&String>) -> Result<bool, String> {
 // 归档便签
 fn archive_note(_notes_dir: &Path, entry: &mut NoteEntry) -> Result<(), String> {
     // 只更新entry的归档状态和过期时间
-    entry.archived = true;
+    entry.status = "archived".to_string();
+    entry.archived_at = Some(get_current_iso8601_time());
     entry.expire_at = None; // 归档后不再需要过期时间
 
     Ok(())
@@ -119,7 +122,8 @@ fn rebuild_index(notes_dir: &Path) -> Result<IndexFile, String> {
 
     // 将所有便签设置为active状态，window为null（V2规范要求）
     for entry in &mut index.notes {
-        entry.archived = false;
+        entry.status = "active".to_string();
+        entry.archived_at = None;
         entry.window = None;
     }
 
@@ -158,7 +162,8 @@ fn scan_directory_for_notes_rebuild_recursive(notes_dir: &Path, index: &mut Inde
                         last_active_at: created_time.to_rfc3339(),
                         expire_at: Some((created_time + Duration::days(7)).to_rfc3339()),
                         cached_preview: None,
-                        archived: false, // 重建时所有note都是active
+                        status: "active".to_string(),
+                        archived_at: None,
                         window: None,    // 重建时所有window都是null
                         file: FileInfo {
                             relative_path,
@@ -254,7 +259,7 @@ fn validate_and_fix_index(notes_dir: &Path) -> Result<IndexFile, String> {
 
     // 检查过期的便签并归档
     for entry in index.notes.iter_mut() {
-        if !entry.archived && entry.expire_at.as_ref().map_or(false, |exp| is_expired(Some(exp)).unwrap_or(true)) {
+        if entry.status == "active" && entry.expire_at.as_ref().map_or(false, |exp| is_expired(Some(exp)).unwrap_or(true)) {
             match archive_note(notes_dir, entry) {
                 Ok(()) => {
                     println!("便签 {} 已归档", entry.id);
@@ -262,7 +267,8 @@ fn validate_and_fix_index(notes_dir: &Path) -> Result<IndexFile, String> {
                 Err(e) => {
                     eprintln!("归档便签 {} 失败: {}", entry.id, e);
                     // 即使归档失败也标记为已归档，避免重复尝试
-                    entry.archived = true;
+                    entry.status = "archived".to_string();
+                    entry.archived_at = Some(get_current_iso8601_time());
                 }
             }
         }
@@ -312,7 +318,8 @@ fn scan_directory_for_notes_recursive(notes_dir: &Path, index: &mut IndexFile, s
                             last_active_at: created_time.to_rfc3339(),
                             expire_at: Some(expires_time.to_rfc3339()),
                             cached_preview: None,
-                            archived: false,
+                            status: "active".to_string(),
+                            archived_at: None,
                             window: Some(WindowInfo {
                                 x: 100.0,
                                 y: 100.0,
@@ -485,7 +492,7 @@ async fn get_active_notes(window: tauri::WebviewWindow) -> Result<Vec<NoteEntry>
 
     let mut active_notes = Vec::new();
     for entry in &index.notes {
-        if !entry.archived && !entry.expire_at.as_ref().map_or(false, |exp| is_expired(Some(exp)).unwrap_or(true)) {
+        if entry.status == "active" && !entry.expire_at.as_ref().map_or(false, |exp| is_expired(Some(exp)).unwrap_or(true)) {
             active_notes.push(entry.clone());
         }
     }
@@ -501,7 +508,7 @@ async fn get_all_unexpired_notes(window: tauri::WebviewWindow) -> Result<Vec<Not
 
     let mut unexpired_notes = Vec::new();
     for entry in &index.notes {
-        if !entry.archived && !entry.expire_at.as_ref().map_or(false, |exp| is_expired(Some(exp)).unwrap_or(true)) {
+        if entry.status == "active" && !entry.expire_at.as_ref().map_or(false, |exp| is_expired(Some(exp)).unwrap_or(true)) {
             unexpired_notes.push(entry.clone());
         }
     }
@@ -567,7 +574,8 @@ async fn create_note(window: tauri::WebviewWindow, x: f64, y: f64, width: f64, h
         last_active_at: created_at.clone(), // 初始last_active_at就是创建时间
         expire_at: Some(expires_at.clone()),
         cached_preview: None,
-        archived: false,
+        status: "active".to_string(),
+        archived_at: None,
         window: Some(WindowInfo {
             x,
             y,
@@ -607,7 +615,7 @@ async fn load_note(window: tauri::WebviewWindow, id: String) -> Result<Option<St
     };
 
     // 在索引中查找该ID的便签
-    if let Some(entry) = index.notes.iter().find(|note| note.id == id && !note.archived) {
+    if let Some(entry) = index.notes.iter().find(|note| note.id == id && note.status == "active") {
         let file_path = notes_dir.join(&entry.file.relative_path);
         if file_path.exists() {
             let full_content = fs::read_to_string(&file_path)
@@ -689,13 +697,13 @@ async fn save_note_content(window: tauri::WebviewWindow, id: String, content: St
     };
 
     // 先检查便签是否存在且未归档
-    if !index.notes.iter().any(|note| note.id == id && !note.archived) {
+    if !index.notes.iter().any(|note| note.id == id && note.status == "active") {
         return Err("找不到指定的便签或便签已被归档".to_string());
     }
     
     // 查找并更新活动时间
     if let Some(update_entry) = index.notes.iter_mut().find(|note| note.id == id) {
-        if update_entry.archived {
+        if update_entry.status == "archived" {
             return Err("便签已被归档，无法更新".to_string());
         }
         
@@ -944,7 +952,8 @@ pub async fn create_note_by_path(notes_dir: std::path::PathBuf, x: f64, y: f64, 
         last_active_at: created_at.clone(), // 初始last_active_at就是创建时间
         expire_at: Some(expires_at.clone()),
         cached_preview: None,
-        archived: false,
+        status: "active".to_string(),
+        archived_at: None,
         window: Some(WindowInfo {
             x,
             y,
@@ -1068,7 +1077,7 @@ fn main() {
                             Ok(index) => {
                                 let mut notes = Vec::new();
                                 for entry in &index.notes {
-                                    if !entry.archived && !entry.expire_at.as_ref().map_or(false, |exp| is_expired(Some(exp)).unwrap_or(false)) {
+                                    if entry.status == "active" && !entry.expire_at.as_ref().map_or(false, |exp| is_expired(Some(exp)).unwrap_or(false)) {
                                         notes.push(entry.clone());
                                     }
                                 }
@@ -1085,7 +1094,7 @@ fn main() {
                         if !unexpired_notes.is_empty() {
                             // 如果有未过期的便签，恢复它们的窗口
                             for note in unexpired_notes {
-                                if !note.archived && note.window.is_some() {
+                                if note.status == "active" && note.window.is_some() {
                                     let window_info = note.window.as_ref().unwrap();
                                     // 创建对应窗口
                                     let label = format!("note-{}", note.id);
@@ -1173,7 +1182,8 @@ fn main() {
                                 last_active_at: created_at.clone(), // 初始last_active_at就是创建时间
                                 expire_at: Some(expires_at.clone()),
                                 cached_preview: None,
-                                archived: false,
+                                status: "active".to_string(),
+                                archived_at: None,
                                 window: Some(WindowInfo {
                                     x: 100.0,
                                     y: 100.0,
