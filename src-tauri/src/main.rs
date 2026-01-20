@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use chrono::{DateTime, Duration, Utc, Local};
 use dirs::data_dir;
 use serde::{Deserialize, Serialize};
-use tauri::{Manager};
+use tauri::{Manager, menu::{MenuBuilder, MenuItem}, tray::TrayIconBuilder};
 use uuid::Uuid;
 
 // 获取AppData目录
@@ -994,6 +994,63 @@ fn main() {
             update_note_window
         ])
         .setup(|app| {
+            // 创建系统托盘菜单项
+            let new_note_item = MenuItem::with_id(app, "new_note", "New Note", true, None::<&str>).unwrap();
+            let archive_item = MenuItem::with_id(app, "archive", "Archive", true, None::<&str>).unwrap();
+            let settings_item = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>).unwrap();
+            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>).unwrap();
+            
+            // 创建系统托盘菜单
+            let tray_menu = MenuBuilder::new(app)
+                .item(&new_note_item)
+                .separator()
+                .item(&archive_item)
+                .separator()
+                .item(&settings_item)
+                .item(&quit_item)
+                .build().unwrap();
+            
+            // 创建系统托盘图标
+            let new_note_item = MenuItem::with_id(app, "new_note", "New Note", true, None::<&str>).unwrap();
+            let archive_item = MenuItem::with_id(app, "archive", "Archive", true, None::<&str>).unwrap();
+            let settings_item = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>).unwrap();
+            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>).unwrap();
+            
+            // 创建系统托盘菜单
+            let _tray_menu = tauri::menu::MenuBuilder::new(app)
+                .item(&new_note_item)
+                .separator()
+                .item(&archive_item)
+                .separator()
+                .item(&settings_item)
+                .item(&quit_item)
+                .build().unwrap();
+            
+            // 创建托盘图标（注意：Windows 必须提供 icon）
+            let _tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone()) // 使用窗口图标
+                .menu(&tray_menu)
+                .on_menu_event(|_app, event| {
+                    match event.id().as_ref() {
+                        "new_note" => {
+                            println!("新建便签功能暂不可用");
+                        },
+                        "archive" => {
+                            // 这里可以实现打开归档窗口的逻辑
+                            println!("打开归档窗口");
+                        },
+                        "settings" => {
+                            // 这里可以实现打开设置窗口的逻辑
+                            println!("打开设置");
+                        },
+                        "quit" => {
+                            std::process::exit(0);
+                        },
+                        _ => {}
+                    }
+                })
+                .build(app).unwrap();
+            
             // 初始化AppData目录
             tauri::async_runtime::block_on(async {
                 // 获取应用数据目录
