@@ -15,7 +15,6 @@ const urlNoteId = urlParams.get('noteId');
 if (urlNoteId) {
   noteId = urlNoteId;
   noteIdSet = true;
-
 }
 
 // 全局标志，防止重复初始化
@@ -25,37 +24,69 @@ let hasInitialized = false;
 let saveTimer = null;
 let idleTimer = null;
 
-/* 顶栏按钮功能 - 修复版本 */
-document.getElementById("btn-close").addEventListener('click', () => {
-  win.close();
-});
-
-document.getElementById("btn-min").addEventListener('click', () => {
-  win.minimize();
-});
-
-// 固定按钮功能
-document.getElementById("btn-top").addEventListener('click', async () => {
-  try {
-    const top = await win.isAlwaysOnTop();
-    await win.setAlwaysOnTop(!top);
-    
-    // 更新按钮样式以反映当前状态
-    const topBtn = document.getElementById("btn-top");
-    if (top) {
-      topBtn.classList.remove('active');
-      topBtn.title = "置顶";
-    } else {
-      topBtn.classList.add('active');
-      topBtn.title = "取消置顶";
-    }
-  } catch (err) {
-    console.error('切换置顶状态失败:', err);
-  }
-});
-
 // 固定/取消固定便签功能
 let isPinned = false; // 本地状态跟踪
+
+// 初始化按钮事件绑定
+function initializeButtonEvents() {
+  /* 顶栏按钮功能 */
+  document.getElementById("btn-close").addEventListener('click', () => {
+    win.close();
+  });
+
+  document.getElementById("btn-min").addEventListener('click', () => {
+    win.minimize();
+  });
+
+  // Always on Top按钮功能
+  document.getElementById("btn-top").addEventListener('click', async () => {
+    try {
+      const top = await win.isAlwaysOnTop();
+      await win.setAlwaysOnTop(!top);
+      
+      // Update button style to reflect current state
+      const topBtn = document.getElementById("btn-top");
+      if (top) {
+        topBtn.classList.remove('active');
+        topBtn.title = "Always on Top";
+      } else {
+        topBtn.classList.add('active');
+        topBtn.title = "Remove from Top";
+      }
+    } catch (err) {
+      console.error('Failed to toggle always-on-top state:', err);
+    }
+  });
+
+  // 固定/取消固定按钮点击事件
+  document.getElementById("btn-pin").addEventListener('click', async () => {
+    if (!noteId) {
+      console.error('noteId not set');
+      return;
+    }
+    
+    try {
+      // 切换固定状态
+      isPinned = !isPinned;
+      
+      // 调用后端API更新固定状态
+      await window.__TAURI__.core.invoke('set_note_pinned', {
+        id: noteId,
+        pinned: isPinned
+      });
+      
+      // 更新按钮样式
+      updatePinButtonStyle();
+      
+      console.log(`Note ${noteId} ${isPinned ? 'pinned' : 'unpinned'}`);
+    } catch (err) {
+      console.error('Failed to set pin status:', err);
+      // 如果失败，恢复按钮状态
+      isPinned = !isPinned;
+      updatePinButtonStyle();
+    }
+  });
+}
 
 // 从后端获取当前便签的固定状态
 async function updatePinStatus() {
@@ -70,7 +101,7 @@ async function updatePinStatus() {
         updatePinButtonStyle();
       }
     } catch (err) {
-      console.warn('获取便签固定状态失败:', err);
+      console.warn('Failed to get note pin status:', err);
     }
   }
 }
@@ -81,44 +112,13 @@ function updatePinButtonStyle() {
   if (pinBtn) {
     if (isPinned) {
       pinBtn.classList.add('active');
-      pinBtn.title = "取消固定";
-      pinBtn.style.opacity = "1";
+      pinBtn.title = "Unpin";
     } else {
       pinBtn.classList.remove('active');
-      pinBtn.title = "固定";
-      pinBtn.style.opacity = "0.6";
+      pinBtn.title = "Pin";
     }
   }
 }
-
-// 固定/取消固定按钮点击事件
-document.getElementById("btn-pin").addEventListener('click', async () => {
-  if (!noteId) {
-    console.error('noteId 未设置');
-    return;
-  }
-  
-  try {
-    // 切换固定状态
-    isPinned = !isPinned;
-    
-    // 调用后端API更新固定状态
-    await window.__TAURI__.core.invoke('set_note_pinned', {
-      id: noteId,
-      pinned: isPinned
-    });
-    
-    // 更新按钮样式
-    updatePinButtonStyle();
-    
-    console.log(`便签 ${noteId} ${isPinned ? '已固定' : '已取消固定'}`);
-  } catch (err) {
-    console.error('设置固定状态失败:', err);
-    // 如果失败，恢复按钮状态
-    isPinned = !isPinned;
-    updatePinButtonStyle();
-  }
-});
 
 // 创建新便签
 async function createNewNote() {
@@ -133,12 +133,10 @@ async function createNewNote() {
       height: size.height
     });
     
-
-    
     // 创建便签时不更新活动时间
-    // 活动时间只在内容发生实质性改变时更新
+    // Activity time only updates when content changes substantially
   } catch (err) {
-    console.error('创建便签失败:', err);
+    console.error('Failed to create note:', err);
   }
 }
 
@@ -148,7 +146,7 @@ textarea.addEventListener("dblclick", async (e) => {
   e.stopPropagation();
 
   try {
-    // 调用Rust创建新便签，这会创建便签文件和索引条目
+    // Call Rust to create new note, this will create note file and index entry
     const position = await win.innerPosition();
     const size = await win.innerSize();
     
@@ -159,12 +157,9 @@ textarea.addEventListener("dblclick", async (e) => {
       height: size.height
     });
     
-
-    
     // 创建对应的新窗口
     const label = `note-${newNoteId}`;
 
-    
     await window.__TAURI__.core.invoke('create_note_window', {
       label: label,
       title: "FadeNote",
@@ -174,10 +169,8 @@ textarea.addEventListener("dblclick", async (e) => {
       y: Math.round(position.y + 20)
     });
 
-
-
   } catch (err) {
-    console.error('创建新便签失败:', err);
+    console.error('Failed to create new note:', err);
   }
 });
 
@@ -185,23 +178,23 @@ textarea.addEventListener("dblclick", async (e) => {
 document.addEventListener('DOMContentLoaded', async () => {
   // 防止重复初始化
   if (hasInitialized) {
-
     return;
   }
   hasInitialized = true;
   
-
+  // 初始化按钮事件
+  initializeButtonEvents();
   
-  // 自动获取AppData目录，不再需要用户手动设置
+  // Auto-get AppData directory, no manual setting needed
   try {
     const currentDir = await window.__TAURI__.core.invoke('ensure_notes_directory');
     if (currentDir) {
-      document.getElementById("current-dir-display").textContent = `目录: ${currentDir}`;
+      document.getElementById("current-dir-display").textContent = `Directory: ${currentDir}`;
     } else {
-      console.warn('无法获取便签目录');
+      console.warn('Unable to get notes directory');
     }
   } catch (err) {
-    console.error('获取便签目录失败:', err);
+    console.error('Failed to get notes directory:', err);
   }
   
   // 检查当前窗口标签，如果是main窗口则不执行便签逻辑
@@ -209,7 +202,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   
   // 如果noteId已经通过URL参数设置，说明这是从Rust传递过来的，直接使用它
   if (noteId && noteIdSet) {
-    // 已通过URL参数获取到noteId，无需再从窗口标签获取
+    // Got noteId from URL parameter, no need to get from window label
     windowLabel = `note-${noteId}`;
 
   } else {
@@ -223,15 +216,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       // 从窗口标签中提取noteId
       const match = windowLabel.match(/note-(.*)/);
       if (match && match[1]) {
-        // 这是一个note窗口，使用标签中的ID
+        // This is a note window, use ID from label
         noteId = match[1];
         noteIdSet = true;
 
       }
     } catch (err) {
-      console.warn('无法获取窗口标签:', err);
+      console.warn('Unable to get window label:', err);
       
-      // 如果什么都无法获取，创建新note
+      // If nothing can be obtained, create new note
 
       await createNewNote();
       noteIdSet = true;
@@ -249,27 +242,27 @@ document.addEventListener('DOMContentLoaded', async () => {
   
   // 等待noteId被设置
   if (!noteId) {
-    console.error('未能获取或创建便签ID');
+    console.error('Failed to get or create note ID');
     return;
   }
   
 
   
-  // 加载便签的位置信息
+  // Load note position information
   try {
     const activeNotes = await window.__TAURI__.core.invoke('get_active_notes');
     const noteDetail = activeNotes.find(note => note.id === noteId);
     
     if (noteDetail) {
-      // 恢复窗口位置和大小
+      // Restore window position and size
       await win.setPosition(new window.__TAURI__.window.Position(noteDetail.window.x, noteDetail.window.y));
       await win.setSize(new window.__TAURI__.window.Size(noteDetail.window.width, noteDetail.window.height));
     }
     
-    // 初始化固定状态
+    // Initialize pin status
     await updatePinStatus();
   } catch (err) {
-    console.warn('获取便签位置信息失败:', err);
+    console.warn('Failed to get note position info:', err);
   }
   
   // 尝试加载现有的便签内容
@@ -279,40 +272,40 @@ document.addEventListener('DOMContentLoaded', async () => {
       textarea.value = savedContent;
     }
   } catch (err) {
-    console.warn('加载便签内容失败:', err);
+    console.warn('Failed to load note content:', err);
   }
   
-  // 设置默认文本（如果没有内容）
+  // Set default text (if no content)
   if (textarea && !textarea.value) {
     textarea.value = "";
   }
   
-  // 监听窗口关闭事件以确保内容被保存
-  // 使用 beforeUnload 事件作为备用方案
+  // Listen to window close event to ensure content is saved
+  // Use beforeUnload event as backup
   window.addEventListener('beforeunload', async () => {
     if (noteId && textarea) {
       try {
-        // 立即保存当前内容
+        // Save current content immediately
         await window.__TAURI__.core.invoke('save_note_content', {
           id: noteId,
           content: textarea.value
         });
 
       } catch (err) {
-        console.error('保存便签内容失败:', err);
+        console.error('Failed to save note content:', err);
       }
     }
   });
   
   // 添加焦点/失焦效果
   if (textarea) {
-    textarea.placeholder = "写点什么…";
+    textarea.placeholder = "Write something...";
     
     textarea.addEventListener('focus', async () => {
       textarea.style.backgroundColor = "#fffdf5";
       
-      // 窗口获得焦点时不更新活动时间
-      // 活动时间只在内容发生实质性改变时更新
+      // Don't update activity time when window gains focus
+      // Activity time only updates when content changes substantially
     });
     
     textarea.addEventListener('blur', () => {
@@ -321,14 +314,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     });
     
-    // 监听文本变化（但不立即保存）
+    // Listen to text changes (but don't save immediately)
     textarea.addEventListener('input', () => {
-      // 清除之前的空闲计时器
+      // Clear previous idle timer
       if (idleTimer) {
         clearTimeout(idleTimer);
       }
       
-      // 设置新的空闲计时器，3秒无操作后触发
+      // Set new idle timer, triggers after 3 seconds of inactivity
       idleTimer = setTimeout(async () => {
         if (noteId !== null) {  // 只要noteId存在就保存，无论内容是否为空
 
@@ -339,26 +332,36 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
 
           } catch (err) {
-            console.error('保存便签内容失败:', err);
+            console.error('Failed to save note content:', err);
           }
         } else {
 
         }
       }, 3000); // 3秒空闲后保存
       
-      // 清除之前的保存计时器
+      // Clear previous save timer
       if (saveTimer) {
         clearTimeout(saveTimer);
       }
     });
   }
+
+  // 初始化 Always on Top 状态
+try {
+  const top = await win.isAlwaysOnTop();
+  const topBtn = document.getElementById("btn-top");
+  if (top) {
+    topBtn.classList.add("active");
+    topBtn.title = "Remove from Top";
+  }
+} catch {}
   
-  // 监听窗口位置变化并更新到后端
+  // Listen to window position changes and update to backend
   let positionUpdateTimer = null;
   
-  // 监听鼠标拖拽结束事件来更新位置和活动时间
+  // Listen to mouse drag end event to update position and activity time
   document.addEventListener('mouseup', async () => {
-    // 防抖处理，避免频繁更新
+    // Debounce processing, avoid frequent updates
     if (positionUpdateTimer) {
       clearTimeout(positionUpdateTimer);
     }
@@ -369,7 +372,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           const position = await win.innerPosition();
           const size = await win.innerSize();
           
-          // 更新窗口信息
+          // Update window info
           await window.__TAURI__.core.invoke('update_note_window', {
             id: noteId,
             x: position.x,
@@ -380,9 +383,9 @@ document.addEventListener('DOMContentLoaded', async () => {
           
 
         } catch (err) {
-          console.error('更新便签窗口信息失败:', err);
+          console.error('Failed to update note window info:', err);
         }
       }
-    }, 500); // 500ms延迟更新
+    }, 500); // 500ms delay update
   });
 });

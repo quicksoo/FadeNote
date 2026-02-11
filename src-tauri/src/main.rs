@@ -209,7 +209,7 @@ fn apply_expire_pass(index: &mut IndexFile, now: &DateTime<Local>) {
         if entry.archived_at.is_none() && is_expired_check(entry, now) {
             // 调用唯一的归档入口
             if let Err(e) = archive_note(entry, now) {
-                eprintln!("归档便签 {} 失败: {}", entry.id, e);
+                eprintln!("Failed to archive note {}: {}", entry.id, e);
                 // 即使归档失败也标记为已归档，避免重复尝试
                 entry.archived_at = Some(now.to_rfc3339());
             }
@@ -1247,7 +1247,7 @@ async fn create_archive_window(app_handle: tauri::AppHandle) -> Result<(), Strin
         "archive",
         tauri::WebviewUrl::App("archive.html".into()),
     )
-    .title("归档便签")
+    .title("Archived Notes")
     .inner_size(800.0, 600.0)
     .resizable(true)
     .decorations(true)
@@ -1747,7 +1747,7 @@ fn main() {
                                 created_at: created_at.clone(),
                                 last_active_at: created_at.clone(),
                                 expire_at: Some(expires_at.clone()),
-                                cached_preview: Some("写点什么吧...".to_string()),
+                                cached_preview: Some("Write something...".to_string()),
                                 status: String::new(),
                                 archived_at: None,
                                 window: Some(WindowInfo {

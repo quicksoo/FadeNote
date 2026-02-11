@@ -1,16 +1,16 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <title>FadeNote</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <!-- 窗口实体背景（兜底层，极其重要） -->
+  <!-- Window background (critical base layer) -->
   <div class="window-bg">
 
     <div class="paper">
-      <!-- 标题栏：仅这里可拖拽 -->
+      <!-- Title bar: Only draggable here -->
       <div class="paper-header" data-tauri-drag-region>
         <span class="dot red" id="btn-close" data-tauri-drag-region="false" title="Close"></span>
         <span class="dot yellow" id="btn-min" data-tauri-drag-region="false" title="Minimize"></span>
@@ -18,10 +18,10 @@
         <span class="dot blue" id="btn-pin" data-tauri-drag-region="false" title="Pin"></span>
       </div>
 
-      <!-- 内容区：整块 textarea -->
+      <!-- Content area: Full textarea -->
       <textarea
         class="paper-content"
-        placeholder="写点什么…"
+        placeholder="Write something..."
       ></textarea>
     </div>
 

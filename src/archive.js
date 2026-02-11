@@ -14,7 +14,7 @@ async function loadArchivedNotes() {
     const archiveList = document.getElementById('archive-list');
     
     if (archivedNotes.length === 0) {
-      archiveList.innerHTML = '<div class="empty-state">暂无归档便签</div>';
+      archiveList.innerHTML = '<div class="empty-state">No archived notes</div>';
       return;
     }
     
@@ -27,15 +27,15 @@ async function loadArchivedNotes() {
       noteElement.className = 'note-item';
       
       // 格式化时间
-      const lastActiveTime = note.lastActiveAt ? new Date(note.lastActiveAt).toLocaleString() : '未知时间';
+      const lastActiveTime = note.lastActiveAt ? new Date(note.lastActiveAt).toLocaleString() : 'Unknown time';
       
       // 获取预览内容，如果没有则显示占位符
-      const previewText = note.cachedPreview || '(已归档便签)';
+      const previewText = note.cachedPreview || '(Archived note)';
       
       noteElement.innerHTML = `
         <div class="note-preview">${previewText}</div>
         <div class="note-meta">
-          <span>归档时间: ${lastActiveTime}</span>
+          <span>Archived: ${lastActiveTime}</span>
           <span>ID: ${note.id.substring(0, 8)}...</span>
         </div>
       `;
@@ -67,18 +67,18 @@ async function loadArchivedNotes() {
           // 重新加载列表
           loadArchivedNotes();
           
-          console.log(`便签 ${note.id} 已恢复`);
+          console.log(`Note ${note.id} restored`);
         } catch (err) {
-          console.error('恢复便签失败:', err);
+          console.error('Failed to restore note:', err);
         }
       });
       
       archiveList.appendChild(noteElement);
     });
   } catch (err) {
-    console.error('加载归档便签失败:', err);
+    console.error('Failed to load archived notes:', err);
     const archiveList = document.getElementById('archive-list');
-    archiveList.innerHTML = `<div class="error">加载失败: ${err.message}</div>`;
+    archiveList.innerHTML = `<div class="error">Load failed: ${err.message}</div>`;
   }
 }
 

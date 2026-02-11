@@ -1,215 +1,212 @@
-# FadeNote v1 README
+FadeNote v1 · Copy / Text Checklist
 
-> 本 README **基于当前已有代码实现**（main.rs / main.js / index.html / archive.html 等），
-> 目标读者是 **参与实现与优化的工程师（qorder）**，而不是最终用户。
->
-> 目的只有一个：
-> **在不改产品方向、不引入新概念的前提下，把 FadeNote v1 打磨到可发布状态。**
+用途：
 
----
+校验 UI / 文案 / 提示语是否符合 FadeNote v1
 
-## 1. 项目定位（一句话）
+不讨论功能，只讨论“说的话对不对”
 
-FadeNote 是一个 **会自动淡出的桌面便签**。
+1. 全局语言规则
 
-* 不是任务管理器
-* 不是长期笔记工具
-* 不要求用户整理
-* 默认让内容自然消失
+ 所有文案 仅使用英文
 
-FadeNote 的核心价值不是“记住”，而是 **“放心写下，然后放下”**。
+ 使用基础英语（A2–B1 水平）
 
----
+ 句子简短、直接
 
-## 2. v1 的设计哲学（必须遵守）
+ 不使用俚语
 
-在任何优化或补充实现前，请先对齐以下原则：
+ 不使用隐喻或文学化表达
 
-1. **弱存在感**
+ 不引用文化、宗教、哲学术语
 
-   * 不打断用户
-   * 不强引导
-   * 不教育用户
+2. 禁用语义（一旦出现就是 ❌）
 
-2. **生命周期优先于 UI**
+文案中 不得出现 以下含义或词汇：
 
-   * 所有功能都服务于 note 的生命周期
-   * 窗口只是表现层
+ “Manage / Management”
 
-3. **可恢复，但不强调管理**
+ “Save forever”
 
-   * 内容不会轻易丢失
-   * 但也不会强迫用户维护
+ “Delete permanently”
 
----
+ “Restore”
 
-## 3. 核心概念说明（统一语义）
+ “Recover”
 
-### 3.1 Note（便签）
+ “Organize”
 
-* 以 Markdown 文件为内容载体
-* index.json 为状态索引
-* Note 是系统中的一等公民
+ “Category / Tag”
 
-### 3.2 Window（窗口）
+ “History”
 
-* Window 只是 Note 的一个展示方式
-* 关闭窗口 ≠ 删除 Note
+ “Settings” / “Preferences”
 
----
+原则：
+FadeNote 不解释“怎么管理”，只描述“时间会发生什么”。
 
-## 4. 四个窗口按钮的最终语义（请勿自行修改）
+3. 时间语义核对（最重要）
 
-### 🔴 Close（关闭）
+每一处涉及便签命运的文案，必须满足：
 
-* 只关闭窗口
-* Note 仍为 active
-* 可通过 Tray / Show Notes 恢复
+ 使用 fade / expire 表达消失
 
----
+ 不使用 delete 表达自然消失
 
-### 🟡 Minimize（最小化）
+ Archive 被描述为 时间结果
 
-* 仅最小化窗口
-* 不触发任何状态变化
+ 没有任何“系统替你决定重要性”的暗示
 
----
+快速判断题（全部要 Yes）
 
-### 🟢 Always on Top（置顶）
+ 用户能否理解「消失 ≠ 删除」？
 
-* **仅窗口行为**
-* 不写入 index.json
-* 窗口关闭后自动失效
-* 重新打开窗口默认不置顶
+ 文案是否避免“你应该 / 系统会帮你”？
 
----
+ 是否尊重用户选择，而非指导用户？
 
-### 📌 Pin（固定）
+4. Pin / Unpin 文案核对
 
-* **生命周期行为**
-* Pin 后的 Note：
+ 使用 “Pin”
 
-  * 永不自动过期
-  * 永不自动归档
-* Pin 状态必须落盘
-* Pin ≠ 置顶，二者完全解耦
+ 使用 “Unpin”
 
----
+ 不使用 “Lock / Save / Keep”
 
-## 5. Note 生命周期模型（v1）
+ 不使用 “Permanent / Forever” 作为按钮文案
 
-### 5.1 状态集合
+ Pin 被表达为 主动选择
 
-* active：当前有效的便签
-* archived：已归档，不在桌面显示
-* expired：生命周期结束（v1 中等同于 archived 处理）
-* pinned：特殊标记，可叠加在 active 上
+ Unpin 被表达为 可逆行为
 
----
+5. Top / Remove from Top 文案核对
 
-### 5.2 生命周期核心规则（必须遵守）
+ 使用 “Always on Top”
 
-1. **非 Pin 的 Note**
+ 使用 “Remove from Top”
 
-   * 长时间未编辑后进入 expire 流程
-   * expire 后进入 archived
+ 不使用 “Cancel Top”
 
-2. **Pin 的 Note**
+ 不使用 “Fixed / Float”
 
-   * 不参与任何 expire 判断
-   * expireAt 必须为 null
+ 文案不暗示任何生命周期变化
 
-3. **Unpin 行为**
+6. Window Controls（Hover 文案）
 
-   * 重新计算 expireAt（如：now + 7 days）
+逐项核对（必须完全一致）：
 
----
+ Close → “Close”
 
-## 6. 首次启动行为（v1 必须实现）
+ Minimize → “Minimize”
 
-### 6.1 首次便签的存在意义
+ Top (inactive) → “Always on Top”
 
-首次启动时，系统会自动创建一张 **普通 Note**，用于向用户传达 FadeNote 的核心理念。
+ Top (active) → “Remove from Top”
 
-### 6.2 首次便签文案（不可改写语义）
+ Pin (inactive) → “Pin”
 
-> 写点什么吧。
->
-> 这张便签会自动保存。
-> 关掉窗口，也不会立刻消失。
->
-> 一段时间后，
-> 它会悄悄淡出。
->
-> 需要的时候，
-> 可以从托盘里再叫回来。
+ Pin (active) → “Unpin”
 
-### 6.3 行为要求
+7. Tray Menu 文案
 
-* 文案作为普通文本存在
-* 用户首次输入后可被完全覆盖
-* 不作为系统提示存储
-* 不重复生成
+ “New Note”
 
----
+ “Show Notes”
 
-## 7. Tray（系统托盘）职责
+ “Archive”
 
-Tray 是 FadeNote 的唯一全局入口。
+ “Quit”
 
-v1 Tray 必须包含：
+核对要点：
 
-* New Note：新建一张 Note 并立刻打开窗口
-* Show Notes：恢复当前存在但无窗口的 active Note
-* Archive：打开归档列表窗口
-* Quit：安全退出应用（保存所有状态）
+ 使用动词 “Show”，而不是 “Restore”
 
----
+ Archive 不加任何修饰词
 
-## 8. Archive（归档）窗口定义
+ Quit 是唯一退出相关文案
 
-### 8.1 Archive 的意义
+8. Show Notes 文案语义核对
 
-* Archive ≠ 删除
-* Archive 是“暂时不在桌面出现”
+ 文案不暗示“找回丢失内容”
 
-### 8.2 v1 Archive 的最低能力
+ 文案不暗示“管理隐藏内容”
 
-* 展示所有 archived Notes
-* 点击可恢复为 active 并打开窗口
+ Show Notes 被理解为：
 
----
+make visible again
 
-## 9. 明确不属于 v1 的内容
+ 不使用 “hidden list / background notes”
 
-以下内容请不要在 v1 中引入：
+9. Archive 页面文案核对
 
-* 搜索
-* 标签 / 分类
-* 富文本编辑
-* 删除（Delete）
-* 设置页
-* 同步 / 云端
+ Archive 被描述为过去
 
----
+ Archive 文案中不出现“恢复”
 
-## 10. v1 完成判断清单（交付标准）
+ 不暗示用户可以“再使用”
 
-在提交 v1 前，请逐项确认：
+ 不出现“storage / backup”语义
 
-* [ ] Pin 与 置顶完全解耦
-* [ ] Pin 会打断所有过期逻辑
-* [ ] 关闭窗口的 Note 可通过 Tray 恢复
-* [ ] 首次便签文案正确展示
-* [ ] Tray 功能完整且稳定
-* [ ] Quit 前状态安全落盘
+空状态文案检查
 
----
+ 不指责用户（no notes yet 是 OK）
 
-## 11. 最重要的一句话（给实现者）
+ 不引导用户操作
 
-FadeNote 不是一个“功能驱动”的产品。
+ 只描述时间结果
 
-**任何实现上的便利，如果破坏了生命周期语义，请以语义为准。**
+10. First Note 文案核对（逐句）
 
-这是 FadeNote 能长期成立的唯一前提。
+必须 完全一致，不允许改写：
+
+What you write here won’t stay forever.
+
+This note will fade after some time,
+unless you choose to pin it.
+
+FadeNote doesn’t keep everything —
+only what matters right now.
+
+
+核对点：
+
+ 明确 “won’t stay forever”
+
+ 明确 “fade”
+
+ 明确 Pin 是唯一例外
+
+ 不解释规则细节
+
+ 不出现品牌自夸
+
+11. 提示 / Toast / 弹窗文案（如有）
+
+ 尽量没有
+
+ 若存在，仅描述事实
+
+ 不说“success / completed”
+
+ 不进行情绪化反馈
+
+12. 最终一致性审查（必做）
+
+对每一处文案，回答下面三个问题：
+
+ 这句话是在解释时间，而不是教人用软件？
+
+ 这句话有没有偷偷替用户做判断？
+
+ 如果只读这句话，是否仍符合 FadeNote 的气质？
+
+只要有一题是 No，这条文案就必须改。
+
+✅ 文案 Definition of Done
+
+所有 checklist 项为 ✅
+
+文案不解释、不教学、不劝导
+
+文案只做一件事：
+如实描述“存在与消失”

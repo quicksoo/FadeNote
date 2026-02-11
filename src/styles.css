@@ -46,14 +46,32 @@ html, body {
   );
 }
 
-/* mac 风格按钮 */
+/* 基础 dot */
 .dot {
   width: 10px;
   height: 10px;
   border-radius: 50%;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.18s ease;
+  border: 1px solid currentColor;
+  background: transparent;
 }
+
+/* 激活状态 */
+.dot.active {
+  background: currentColor;
+  border: none;
+  box-shadow:
+    inset 0 0 0 1px rgba(255,255,255,0.45),
+    0 0 0 1px rgba(0,0,0,0.12);
+}
+
+/* 颜色定义 —— 只用 color */
+.dot.red    { color: #ff5f57; }
+.dot.yellow { color: #ffbd2e; }
+.dot.green  { color: #28c840; }
+.dot.blue   { color: #4a90e2; }
+
 
 /* Hover 效果 */
 .dot:hover {
@@ -61,17 +79,18 @@ html, body {
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.5);
 }
 
-.dot.red { background: #ff5f57; }
-.dot.red:hover { background: #ff3b30; }
+/* 只有未激活的才明显 hover */
+.dot:not(.active):hover {
+  transform: scale(1.12);
+  box-shadow: 0 0 0 2px rgba(255,255,255,0.5);
+}
 
-.dot.yellow { background: #ffbd2e; }
-.dot.yellow:hover { background: #ff9500; }
+/* 激活态 hover 更克制 */
+.dot.active:hover {
+  transform: scale(1.05);
+}
 
-.dot.green { background: #28c840; }
-.dot.green:hover { background: #20b230; }
 
-.dot.blue { background: #4a90e2; }
-.dot.blue:hover { background: #357abd; }
 
 /* 设置目录按钮 */
 .header-btn {
