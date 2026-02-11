@@ -346,16 +346,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // 初始化 Always on Top 状态
-try {
-  const top = await win.isAlwaysOnTop();
-  const topBtn = document.getElementById("btn-top");
-  if (top) {
-    topBtn.classList.add("active");
-    topBtn.title = "Remove from Top";
-  }
-} catch {}
-  
   // Listen to window position changes and update to backend
   let positionUpdateTimer = null;
   
@@ -388,4 +378,14 @@ try {
       }
     }, 500); // 500ms delay update
   });
+
+  // 初始化 Always on Top 状态
+try {
+  const top = await win.isAlwaysOnTop();
+  const topBtn = document.getElementById("btn-top");
+  if (top) {
+    topBtn.classList.add("active");
+    topBtn.title = "Remove from Top";
+  }
+} catch {}
 });
