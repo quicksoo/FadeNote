@@ -17,6 +17,82 @@ fn get_app_data_dir() -> Result<PathBuf, String> {
     Ok(app_data_dir)
 }
 
+// 检查是否为首次启动
+// 条件：index.json不存在或为空，且notes目录下没有任何md文件
+fn is_first_launch(app_data_dir: &Path) -> bool {
+    let index_path = app_data_dir.join("index.json");
+    let notes_path = app_data_dir.join("notes");
+    
+    // 如果index.json不存在，则可能是首次启动
+    if !index_path.exists() {
+        return true;
+    }
+    
+    // 如果index.json存在但无法解析或为空，则是首次启动
+    if let Ok(content) = std::fs::read_to_string(&index_path) {
+        if content.trim().is_empty() {
+            return true;
+        }
+        // 尝试解析index.json
+        if let Ok(index_file) = serde_json::from_str::<IndexFile>(&content) {
+            if index_file.notes.is_empty() {
+                // 检查notes目录下是否有md文件
+                if notes_path.exists() {
+                    if let Ok(entries) = std::fs::read_dir(&notes_path) {
+                        for entry in entries.flatten() {
+                            if let Ok(file_type) = entry.file_type() {
+                                if file_type.is_dir() {
+                                    // 检查子目录中的md文件
+                                    if let Ok(sub_entries) = std::fs::read_dir(entry.path()) {
+                                        for sub_entry in sub_entries.flatten() {
+                                            if let Ok(sub_file_type) = sub_entry.file_type() {
+                                                if sub_file_type.is_file() {
+                                                    if let Some(ext) = sub_entry.path().extension() {
+                                                        if ext == "md" {
+                                                            return false; // 找到md文件，不是首次启动
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else if file_type.is_file() {
+                                    if let Some(ext) = entry.path().extension() {
+                                        if ext == "md" {
+                                            return false; // 找到md文件，不是首次启动
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return true; // 没有找到任何md文件
+            } else {
+                return false; // index.json中有便签记录，不是首次启动
+            }
+        } else {
+            return true; // 无法解析index.json，视为首次启动
+        }
+    }
+    
+    true // 默认视为首次启动
+}
+
+// 获取首次启动欢迎文案
+fn get_welcome_content() -> String {
+    "写点什么吧。
+
+这张便签会自动保存。
+关掉窗口，也不会立刻消失。
+
+一段时间后，
+它会悄悄淡出。
+
+需要的时候，
+可以从托盘里再叫回来。".to_string()
+}
+
 // V2规范的数据模型
 #[derive(Serialize, Deserialize, Clone)]
 struct AppInfo {
@@ -56,6 +132,7 @@ struct NoteEntry {
     #[serde(rename = "archivedAt")]
     archived_at: Option<String>,
     window: Option<WindowInfo>,
+    pinned: bool,  // 是否固定，固定便签不会过期
     file: FileInfo,
 }
 
@@ -84,6 +161,11 @@ fn is_archived(entry: &NoteEntry) -> bool {
 
 // 判断便签是否过期
 fn is_expired_check(entry: &NoteEntry, now: &DateTime<Local>) -> bool {
+    // 如果便签被固定，则永远不会过期
+    if entry.pinned {
+        return false;
+    }
+    
     match &entry.expire_at {
         Some(time_str) => {
             match DateTime::parse_from_rfc3339(time_str) {
@@ -239,6 +321,7 @@ fn scan_directory_for_notes_rebuild_recursive(notes_dir: &Path, index: &mut Inde
                         status: String::new(), // 禁止手写，将在派生时设置
                         archived_at,
                         window: None,    // 重建时所有window都是null
+                        pinned: false,  // 默认不固定
                         file: FileInfo {
                             relative_path,
                         },
@@ -292,6 +375,9 @@ fn normalize_index(mut index: IndexFile) -> IndexFile {
         if entry.file.relative_path.is_empty() {
             entry.file.relative_path = format!("notes/unknown/{}.md", entry.id);
         }
+        
+        // 确保pinned字段存在（默认为false）
+        // 注意：这里不需要设置默认值，因为我们已经在创建NoteEntry时设置了
     }
     
     index
@@ -425,6 +511,7 @@ fn scan_directory_for_notes_recursive_with_existing(
                                 width: 280.0,
                                 height: 360.0,
                             }),
+                            pinned: false,  // 默认不固定
                             file: FileInfo {
                                 relative_path,
                             },
@@ -606,6 +693,95 @@ async fn get_all_active_notes(window: tauri::WebviewWindow) -> Result<Vec<NoteEn
     Ok(active_notes)
 }
 
+// 获取所有归档的便签
+#[tauri::command]
+async fn get_archived_notes(window: tauri::WebviewWindow) -> Result<Vec<NoteEntry>, String> {
+    let notes_dir = PathBuf::from(ensure_notes_directory(window).await?);
+    let index = validate_and_fix_index(&notes_dir)?;
+
+    let mut archived_notes = Vec::new();
+    for entry in &index.notes {
+        if !is_active(entry) {  // 归档的便签是不活跃的
+            archived_notes.push(entry.clone());
+        }
+    }
+
+    Ok(archived_notes)
+}
+
+// 获取存在但当前没有窗口的便签（即隐藏的便签）
+#[tauri::command]
+async fn get_notes_without_windows(window: tauri::WebviewWindow) -> Result<Vec<NoteEntry>, String> {
+    // 克隆window以便后面使用
+    let window_clone = window.clone();
+    let app_handle = window.app_handle().clone();
+    let all_windows = app_handle.webview_windows();
+    
+    let notes_dir = PathBuf::from(ensure_notes_directory(window_clone).await?);
+    let index = validate_and_fix_index(&notes_dir)?;
+    
+    let mut hidden_notes = Vec::new();
+    for entry in &index.notes {
+        if is_active(entry) && entry.window.is_some() {  // 活跃且应该有窗口
+            let label = format!("note-{}", entry.id);
+            
+            // 检查该标签的窗口是否存在
+            if let Some(note_window) = all_windows.get(&label) {
+                // 检查窗口是否可见
+                if let Ok(is_visible) = note_window.is_visible() {
+                    if !is_visible {
+                        // 窗口存在但不可见，需要恢复
+                        hidden_notes.push(entry.clone());
+                    }
+                } else {
+                    // 如果无法获取可见性状态，也认为是隐藏的
+                    hidden_notes.push(entry.clone());
+                }
+            } else {
+                // 窗口不存在，需要创建
+                hidden_notes.push(entry.clone());
+            }
+        } else if is_active(entry) && entry.window.is_none() {  // 活跃但没有窗口配置
+            hidden_notes.push(entry.clone());
+        }
+    }
+
+    Ok(hidden_notes)
+}
+
+// 恢复没有窗口的便签（为它们创建窗口）
+#[tauri::command]
+async fn restore_notes_without_windows(window: tauri::WebviewWindow) -> Result<(), String> {
+    let notes_without_windows = get_notes_without_windows(window.clone()).await?;
+    
+    let app_handle = window.app_handle().clone();
+    for note in notes_without_windows {
+        // 为便签创建默认窗口位置
+        let default_x = 100.0 + (note.id.as_bytes()[0] as f64 * 20.0) % 200.0;
+        let default_y = 100.0 + (note.id.as_bytes()[1] as f64 * 20.0) % 200.0;
+        
+        let window_info = note.window.unwrap_or(WindowInfo {
+            x: default_x,
+            y: default_y,
+            width: 280.0,
+            height: 360.0,
+        });
+        
+        let label = format!("note-{}", note.id);
+        let _ = create_note_window(
+            app_handle.clone(),
+            label,
+            "FadeNote".to_string(),
+            window_info.width as u32,
+            window_info.height as u32,
+            Some(window_info.x as i32),
+            Some(window_info.y as i32),
+        ).await;
+    }
+    
+    Ok(())
+}
+
 // 创建新的便签
 #[tauri::command]
 async fn create_note(window: tauri::WebviewWindow, x: f64, y: f64, width: f64, height: f64) -> Result<String, String> {
@@ -672,6 +848,7 @@ async fn create_note(window: tauri::WebviewWindow, x: f64, y: f64, width: f64, h
             width,
             height,
         }),
+        pinned: false,  // 默认不固定
         file: FileInfo {
             relative_path: rel_path,
         },
@@ -783,6 +960,42 @@ fn internal_restore_note(entry: &mut NoteEntry, now: &DateTime<Local>) {
     entry.last_active_at = now.to_rfc3339();
     let new_expire_time = now.with_timezone(&chrono::Utc) + Duration::days(7);
     entry.expire_at = Some(new_expire_time.to_rfc3339());
+}
+
+// 设置便签固定状态
+#[tauri::command]
+async fn set_note_pinned(window: tauri::WebviewWindow, id: String, pinned: bool) -> Result<(), String> {
+    let notes_dir = PathBuf::from(ensure_notes_directory(window).await?);
+    
+    // 从索引中获取文件路径
+    let index_path = notes_dir.join("index.json");
+    if !index_path.exists() {
+        return Err("索引文件不存在".to_string());
+    }
+
+    let mut index: IndexFile = {
+        let content = fs::read_to_string(&index_path)
+            .map_err(|e| format!("读取索引文件失败: {}", e))?;
+        serde_json::from_str(&content)
+            .map_err(|e| format!("解析索引文件失败: {}", e))?
+    };
+
+    // 查找并更新指定ID的便签
+    if let Some(entry) = index.notes.iter_mut().find(|note| note.id == id) {
+        entry.pinned = pinned;
+        
+        // 保存更新后的索引
+        index.app.name = "FadeNote".to_string(); // 确保app信息存在
+        // 不修改rebuildAt字段（V2规范：普通启动/更新禁止写入rebuildAt）
+        let json_content = serde_json::to_string_pretty(&index)
+            .map_err(|e| format!("序列化索引失败: {}", e))?;
+        fs::write(&index_path, json_content)
+            .map_err(|e| format!("写入索引文件失败: {}", e))?;
+
+        Ok(())
+    } else {
+        Err("找不到指定的便签".to_string())
+    }
 }
 
 // 恢复归档的便签
@@ -1026,6 +1239,25 @@ async fn create_note_window(
     Ok(())
 }
 
+// 创建归档列表窗口
+#[tauri::command]
+async fn create_archive_window(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let window = tauri::WebviewWindowBuilder::new(
+        &app_handle,
+        "archive",
+        tauri::WebviewUrl::App("archive.html".into()),
+    )
+    .title("归档便签")
+    .inner_size(800.0, 600.0)
+    .resizable(true)
+    .decorations(true)
+    .visible(true);
+
+    let _window = window.build().map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 // 初始化便签目录结构（通过路径）
 pub async fn initialize_notes_directory_by_path(notes_dir: std::path::PathBuf) -> Result<String, String> {
     std::fs::create_dir_all(&notes_dir).map_err(|e| format!("创建AppData目录失败: {}", e))?;
@@ -1104,6 +1336,7 @@ pub async fn create_note_by_path(notes_dir: std::path::PathBuf, x: f64, y: f64, 
             width,
             height,
         }),
+        pinned: false,  // 默认不固定
         file: FileInfo {
             relative_path: rel_path,
         },
@@ -1136,50 +1369,50 @@ fn main() {
         })
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // 隐藏窗口而不是关闭它
+                let _ = window.hide();
+                // 阻止默认的关闭行为
+                api.prevent_close();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             create_note_window,
             initialize_notes_directory,
             ensure_notes_directory,
             get_active_notes,
             get_all_active_notes,
+            get_archived_notes,
+            get_notes_without_windows,
+            restore_notes_without_windows,
             has_unexpired_notes,
             create_note,
             load_note,
             update_note_activity,
             save_note_content,
             update_note_window,
-            restore_note
+            restore_note,
+            set_note_pinned,
+            create_archive_window
         ])
         .setup(|app| {
+            // 为应用设置防止退出行为
+            let app_handle = app.handle().clone();
+            
             // 创建系统托盘菜单项
             let new_note_item = MenuItem::with_id(app, "new_note", "New Note", true, None::<&str>).unwrap();
+            let show_notes_item = MenuItem::with_id(app, "show_notes", "Show Notes", true, None::<&str>).unwrap();
             let archive_item = MenuItem::with_id(app, "archive", "Archive", true, None::<&str>).unwrap();
-            let settings_item = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>).unwrap();
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>).unwrap();
             
             // 创建系统托盘菜单
             let tray_menu = MenuBuilder::new(app)
                 .item(&new_note_item)
+                .item(&show_notes_item)
                 .separator()
                 .item(&archive_item)
                 .separator()
-                .item(&settings_item)
-                .item(&quit_item)
-                .build().unwrap();
-            
-            // 创建系统托盘图标
-            let new_note_item = MenuItem::with_id(app, "new_note", "New Note", true, None::<&str>).unwrap();
-            let archive_item = MenuItem::with_id(app, "archive", "Archive", true, None::<&str>).unwrap();
-            let settings_item = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>).unwrap();
-            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>).unwrap();
-            
-            // 创建系统托盘菜单
-            let _tray_menu = tauri::menu::MenuBuilder::new(app)
-                .item(&new_note_item)
-                .separator()
-                .item(&archive_item)
-                .separator()
-                .item(&settings_item)
                 .item(&quit_item)
                 .build().unwrap();
             
@@ -1190,18 +1423,115 @@ fn main() {
                 .on_menu_event(|_app, event| {
                     match event.id().as_ref() {
                         "new_note" => {
-                            println!("新建便签功能暂不可用");
+                            // 创建新便签
+                            let app_handle = _app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                // 创建新便签
+                                let id = match create_note_by_path(
+                                    get_app_data_dir().unwrap(),
+                                    200.0,  // 默认X坐标
+                                    200.0,  // 默认Y坐标
+                                    280.0,  // 默认宽度
+                                    360.0,  // 默认高度
+                                ).await {
+                                    Ok(id) => id,
+                                    Err(e) => {
+                                        eprintln!("创建新便签失败: {}", e);
+                                        return;
+                                    }
+                                };
+                                
+                                // 为新便签创建窗口
+                                let label = format!("note-{}", id);
+                                if let Err(e) = create_note_window(
+                                    app_handle.clone(),
+                                    label,
+                                    "FadeNote".to_string(),
+                                    280,
+                                    360,
+                                    Some(200),
+                                    Some(200),
+                                ).await {
+                                    eprintln!("创建便签窗口失败: {}", e);
+                                }
+                            });
+                        },
+                        "show_notes" => {
+                            // 恢复没有窗口或隐藏的便签
+                            let app_handle = _app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                // 获取当前所有窗口及其可见性状态
+                                let all_windows = app_handle.webview_windows();
+                                
+                                // 获取所有活跃便签
+                                let app_data_dir = get_app_data_dir().unwrap();
+                                let index = validate_and_fix_index(&app_data_dir).unwrap_or_else(|_| {
+                                    IndexFile {
+                                        version: 2,
+                                        app: AppInfo {
+                                            name: "FadeNote".to_string(),
+                                            created_at: get_current_iso8601_time(),
+                                            rebuild_at: None,
+                                        },
+                                        notes: Vec::new(),
+                                    }
+                                });
+                                
+                                // 找出需要恢复的活跃便签（没有窗口或窗口隐藏）
+                                for entry in &index.notes {
+                                    if is_active(entry) && entry.window.is_some() {
+                                        let label = format!("note-{}", entry.id);
+                                        
+                                        // 检查窗口是否存在且是否可见
+                                        if let Some(note_window) = all_windows.get(&label) {
+                                            // 窗口存在，检查是否可见
+                                            if let Ok(is_visible) = note_window.is_visible() {
+                                                if !is_visible {
+                                                    // 窗口存在但不可见，显示它
+                                                    let _ = note_window.show();
+                                                    let _ = note_window.set_focus();
+                                                }
+                                            } else {
+                                                // 无法获取可见性，尝试显示
+                                                let _ = note_window.show();
+                                                let _ = note_window.set_focus();
+                                            }
+                                        } else {
+                                            // 窗口不存在，创建新窗口
+                                            let window_info = entry.window.as_ref().unwrap();
+                                            if let Err(e) = create_note_window(
+                                                app_handle.clone(),
+                                                label,
+                                                "FadeNote".to_string(),
+                                                window_info.width as u32,
+                                                window_info.height as u32,
+                                                Some(window_info.x as i32),
+                                                Some(window_info.y as i32),
+                                            ).await {
+                                                eprintln!("恢复便签窗口失败 {}: {}", entry.id, e);
+                                            }
+                                        }
+                                    }
+                                }
+                            });
                         },
                         "archive" => {
-                            // 这里可以实现打开归档窗口的逻辑
-                            println!("打开归档窗口");
-                        },
-                        "settings" => {
-                            // 这里可以实现打开设置窗口的逻辑
-                            println!("打开设置");
+                            // 打开归档窗口
+                            let app_handle = _app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let _ = create_archive_window(app_handle).await;
+                            });
                         },
                         "quit" => {
-                            std::process::exit(0);
+                            // 退出前确保所有状态持久化
+                            tauri::async_runtime::spawn(async move {
+                                // 确保index.json是最新的
+                                let app_data_dir = get_app_data_dir().unwrap();
+                                let _ = validate_and_fix_index(&app_data_dir);
+                                
+                                // 安全退出
+                                std::process::exit(0);
+                            });
                         },
                         _ => {}
                     }
@@ -1214,6 +1544,10 @@ fn main() {
                 let app_data_dir = get_app_data_dir().unwrap();
                 // 确保目录存在
                 std::fs::create_dir_all(&app_data_dir).unwrap();
+                
+                // 检查是否为首次启动
+                let first_launch = is_first_launch(&app_data_dir);
+                
                 // 验证并修复索引
                 match validate_and_fix_index(&app_data_dir) {
                     Ok(_) => {
@@ -1283,8 +1617,89 @@ fn main() {
                             }
                         }
                         
-                        // 如果没有恢复任何窗口（无论是因为没有未过期的便签还是所有便签都没有窗口信息），创建一个新的默认便签窗口
-                        if restored_count == 0 {
+                        // 首次启动逻辑
+                        if first_launch {
+                            println!("首次启动，创建欢迎便签");
+                            
+                            // 创建欢迎便签
+                            let welcome_id = Uuid::new_v4().to_string();
+                            let created_at = get_current_iso8601_time();
+                            let expires_at = (chrono::DateTime::parse_from_rfc3339(&created_at)
+                                .unwrap_or_else(|_| chrono::Local::now().into())
+                                .naive_local()
+                                .and_local_timezone(chrono::Local)
+                                .unwrap() + chrono::Duration::days(7)).to_rfc3339();
+                            
+                            // 创建欢迎内容
+                            let welcome_content = get_welcome_content();
+                            let full_content = build_full_content(&welcome_id, &created_at, &welcome_content);
+                            
+                            // 创建按日期组织的目录结构
+                            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+                            let dated_dir = app_data_dir.join("notes").join(today);
+                            std::fs::create_dir_all(&dated_dir).unwrap();
+
+                            // 创建文件
+                            let file_path = dated_dir.join(format!("{}.md", welcome_id));
+                            std::fs::write(&file_path, full_content).unwrap();
+
+                            let rel_path = file_path.strip_prefix(&app_data_dir)
+                                .unwrap_or(&file_path)
+                                .to_string_lossy()
+                                .to_string();
+
+                            let mut welcome_entry = NoteEntry {
+                                id: welcome_id.clone(),
+                                created_at: created_at.clone(),
+                                last_active_at: created_at.clone(),
+                                expire_at: Some(expires_at.clone()),
+                                cached_preview: Some("写点什么吧...".to_string()),
+                                status: String::new(),
+                                archived_at: None,
+                                window: Some(WindowInfo {
+                                    x: 200.0,
+                                    y: 200.0,
+                                    width: 300.0,
+                                    height: 380.0,
+                                }),
+                                pinned: false,  // 欢迎便签默认不固定
+                                file: FileInfo {
+                                    relative_path: rel_path,
+                                },
+                            };
+                            
+                            // 派生状态
+                            derive_status(&mut welcome_entry);
+                            index.notes.push(welcome_entry);
+
+                            // 保存索引
+                            let json_content = serde_json::to_string_pretty(&index)
+                                .unwrap_or_else(|_| "{}".to_string());
+                            std::fs::write(&index_path, json_content)
+                                .unwrap();
+                            
+                            // 创建欢迎便签窗口
+                            let label = format!("note-{}", welcome_id);
+                            let title = "FadeNote";
+                            
+                            match create_note_window(
+                                app.app_handle().clone(),
+                                label,
+                                title.to_string(),
+                                300,
+                                380,
+                                Some(200),
+                                Some(200),
+                            ).await {
+                                Ok(_) => {
+                                    println!("创建欢迎便签窗口: {}", welcome_id);
+                                    restored_count += 1;
+                                },
+                                Err(e) => eprintln!("创建欢迎便签窗口失败 {}: {}", welcome_id, e),
+                            }
+                        }
+                        // 如果不是首次启动且没有恢复任何窗口，创建默认便签
+                        else if restored_count == 0 {
                             // 直接创建便签和窗口，而不使用临时窗口
                             // 创建便签
                             let index_path = app_data_dir.join("index.json");
@@ -1354,6 +1769,7 @@ fn main() {
                                     width: 280.0,
                                     height: 360.0,
                                 }),
+                                pinned: false,  // 默认不固定
                                 file: FileInfo {
                                     relative_path: rel_path,
                                 },

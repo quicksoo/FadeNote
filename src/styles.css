@@ -52,11 +52,26 @@ html, body {
   height: 10px;
   border-radius: 50%;
   cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+/* Hover 效果 */
+.dot:hover {
+  transform: scale(1.1);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.5);
 }
 
 .dot.red { background: #ff5f57; }
+.dot.red:hover { background: #ff3b30; }
+
 .dot.yellow { background: #ffbd2e; }
+.dot.yellow:hover { background: #ff9500; }
+
 .dot.green { background: #28c840; }
+.dot.green:hover { background: #20b230; }
+
+.dot.blue { background: #4a90e2; }
+.dot.blue:hover { background: #357abd; }
 
 /* 设置目录按钮 */
 .header-btn {

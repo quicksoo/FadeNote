@@ -54,6 +54,72 @@ document.getElementById("btn-top").addEventListener('click', async () => {
   }
 });
 
+// 固定/取消固定便签功能
+let isPinned = false; // 本地状态跟踪
+
+// 从后端获取当前便签的固定状态
+async function updatePinStatus() {
+  if (noteId) {
+    try {
+      // 获取便签详情以确定当前固定状态
+      const activeNotes = await window.__TAURI__.core.invoke('get_active_notes');
+      const noteDetail = activeNotes.find(note => note.id === noteId);
+      
+      if (noteDetail) {
+        isPinned = noteDetail.pinned || false;
+        updatePinButtonStyle();
+      }
+    } catch (err) {
+      console.warn('获取便签固定状态失败:', err);
+    }
+  }
+}
+
+// 更新固定按钮样式
+function updatePinButtonStyle() {
+  const pinBtn = document.getElementById("btn-pin");
+  if (pinBtn) {
+    if (isPinned) {
+      pinBtn.classList.add('active');
+      pinBtn.title = "取消固定";
+      pinBtn.style.opacity = "1";
+    } else {
+      pinBtn.classList.remove('active');
+      pinBtn.title = "固定";
+      pinBtn.style.opacity = "0.6";
+    }
+  }
+}
+
+// 固定/取消固定按钮点击事件
+document.getElementById("btn-pin").addEventListener('click', async () => {
+  if (!noteId) {
+    console.error('noteId 未设置');
+    return;
+  }
+  
+  try {
+    // 切换固定状态
+    isPinned = !isPinned;
+    
+    // 调用后端API更新固定状态
+    await window.__TAURI__.core.invoke('set_note_pinned', {
+      id: noteId,
+      pinned: isPinned
+    });
+    
+    // 更新按钮样式
+    updatePinButtonStyle();
+    
+    console.log(`便签 ${noteId} ${isPinned ? '已固定' : '已取消固定'}`);
+  } catch (err) {
+    console.error('设置固定状态失败:', err);
+    // 如果失败，恢复按钮状态
+    isPinned = !isPinned;
+    updatePinButtonStyle();
+  }
+});
+
 // 创建新便签
 async function createNewNote() {
   const position = await win.innerPosition();
@@ -199,6 +265,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       await win.setPosition(new window.__TAURI__.window.Position(noteDetail.window.x, noteDetail.window.y));
       await win.setSize(new window.__TAURI__.window.Size(noteDetail.window.width, noteDetail.window.height));
     }
+    
+    // 初始化固定状态
+    await updatePinStatus();
   } catch (err) {
     console.warn('获取便签位置信息失败:', err);
   }
