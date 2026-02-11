@@ -1355,6 +1355,55 @@ pub async fn create_note_by_path(notes_dir: std::path::PathBuf, x: f64, y: f64, 
     Ok(id)
 }
 
+// 更新便签的窗口信息到index.json
+async fn update_note_window_info(
+    app_data_dir: &Path,
+    note_id: &str,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    let index_path = app_data_dir.join("index.json");
+    
+    // 读取现有索引
+    let mut index: IndexFile = if index_path.exists() {
+        let content = fs::read_to_string(&index_path)
+            .map_err(|e| format!("读取索引文件失败: {}", e))?;
+        serde_json::from_str(&content)
+            .map_err(|e| format!("解析索引文件失败: {}", e))?
+    } else {
+        return Err("索引文件不存在".to_string());
+    };
+    
+    // 查找并更新对应的便签
+    let mut found = false;
+    for entry in &mut index.notes {
+        if entry.id == note_id {
+            entry.window = Some(WindowInfo {
+                x,
+                y,
+                width,
+                height,
+            });
+            found = true;
+            break;
+        }
+    }
+    
+    if !found {
+        return Err(format!("未找到ID为 {} 的便签", note_id));
+    }
+    
+    // 保存更新后的索引
+    let json_content = serde_json::to_string_pretty(&index)
+        .map_err(|e| format!("序列化索引失败: {}", e))?;
+    fs::write(&index_path, json_content)
+        .map_err(|e| format!("写入索引文件失败: {}", e))?;
+    
+    Ok(())
+}
+
 // 检查是否有活跃的便签
 #[tauri::command]
 async fn has_unexpired_notes(window: tauri::WebviewWindow) -> Result<bool, String> {
@@ -1460,8 +1509,11 @@ fn main() {
                             // 恢复没有窗口或隐藏的便签
                             let app_handle = _app.clone();
                             tauri::async_runtime::spawn(async move {
+                                println!("Show Notes 功能被调用");
+                                
                                 // 获取当前所有窗口及其可见性状态
                                 let all_windows = app_handle.webview_windows();
+                                println!("当前窗口数量: {}", all_windows.len());
                                 
                                 // 获取所有活跃便签
                                 let app_data_dir = get_app_data_dir().unwrap();
@@ -1477,42 +1529,84 @@ fn main() {
                                     }
                                 });
                                 
-                                // 找出需要恢复的活跃便签（没有窗口或窗口隐藏）
+                                println!("索引中便签总数: {}", index.notes.len());
+                                
+                                let mut active_count = 0;
+                                let mut window_null_count = 0;
+                                
+                                // 找出需要恢复的活跃便签（包括没有窗口配置的便签）
                                 for entry in &index.notes {
-                                    if is_active(entry) && entry.window.is_some() {
+                                    if is_active(entry) {
+                                        active_count += 1;
+                                        if entry.window.is_none() {
+                                            window_null_count += 1;
+                                        }
+                                        
                                         let label = format!("note-{}", entry.id);
+                                        println!("处理便签 {}: window.is_none() = {}, 标签 = {}", 
+                                                entry.id, entry.window.is_none(), label);
                                         
                                         // 检查窗口是否存在且是否可见
                                         if let Some(note_window) = all_windows.get(&label) {
+                                            println!("便签 {} 窗口已存在", entry.id);
                                             // 窗口存在，检查是否可见
                                             if let Ok(is_visible) = note_window.is_visible() {
                                                 if !is_visible {
                                                     // 窗口存在但不可见，显示它
+                                                    println!("显示隐藏的窗口: {}", entry.id);
                                                     let _ = note_window.show();
                                                     let _ = note_window.set_focus();
+                                                } else {
+                                                    println!("窗口 {} 已经可见", entry.id);
                                                 }
                                             } else {
                                                 // 无法获取可见性，尝试显示
+                                                println!("无法获取可见性，尝试显示窗口: {}", entry.id);
                                                 let _ = note_window.show();
                                                 let _ = note_window.set_focus();
                                             }
                                         } else {
                                             // 窗口不存在，创建新窗口
-                                            let window_info = entry.window.as_ref().unwrap();
+                                            println!("创建新窗口 for 便签: {}", entry.id);
+                                            // 如果有窗口配置，使用配置信息；否则使用默认配置
+                                            let (width, height, x, y) = if let Some(window_info) = entry.window.as_ref() {
+                                                (window_info.width as u32, window_info.height as u32, 
+                                                 Some(window_info.x as i32), Some(window_info.y as i32))
+                                            } else {
+                                                // 为没有窗口配置的便签使用默认配置，并添加基于ID的偏移
+                                                println!("使用默认窗口配置 for 便签: {}", entry.id);
+                                                let offset = (entry.id.as_bytes()[0] as i32 * 30) % 300; // 基于ID生成偏移量
+                                                (280u32, 360u32, Some(100i32 + offset), Some(100i32 + offset))
+                                            };
+                                            
                                             if let Err(e) = create_note_window(
                                                 app_handle.clone(),
                                                 label,
                                                 "FadeNote".to_string(),
-                                                window_info.width as u32,
-                                                window_info.height as u32,
-                                                Some(window_info.x as i32),
-                                                Some(window_info.y as i32),
+                                                width,
+                                                height,
+                                                x,
+                                                y,
                                             ).await {
                                                 eprintln!("恢复便签窗口失败 {}: {}", entry.id, e);
+                                            } else {
+                                                println!("成功创建窗口 for 便签: {}", entry.id);
+                                                
+                                                // 更新index.json中的window属性
+                                                if entry.window.is_none() {
+                                                    if let Err(e) = update_note_window_info(&app_data_dir, &entry.id, x.unwrap_or(100) as f64, y.unwrap_or(100) as f64, width as f64, height as f64).await {
+                                                        eprintln!("更新便签窗口信息失败 {}: {}", entry.id, e);
+                                                    } else {
+                                                        println!("成功更新便签 {} 的窗口信息到index.json", entry.id);
+                                                    }
+                                                }
                                             }
                                         }
                                     }
                                 }
+                                
+                                println!("处理完成: 活跃便签 {} 个，其中 window 为 null 的有 {} 个", 
+                                        active_count, window_null_count);
                             });
                         },
                         "archive" => {
