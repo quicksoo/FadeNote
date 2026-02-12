@@ -68,7 +68,7 @@ html, body {
 
 /* 颜色定义 —— 只用 color */
 .dot.red    { color: #ff5f57; }
-.dot.yellow { color: #ffbd2e; }
+.dot.orange { color: #ff7f2e; }
 .dot.green  { color: #28c840; }
 .dot.blue   { color: #4a90e2; }
 

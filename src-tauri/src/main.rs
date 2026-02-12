@@ -998,6 +998,52 @@ async fn set_note_pinned(window: tauri::WebviewWindow, id: String, pinned: bool)
     }
 }
 
+// 删除便签
+#[tauri::command]
+async fn delete_note(window: tauri::WebviewWindow, id: String) -> Result<(), String> {
+    let notes_dir = PathBuf::from(ensure_notes_directory(window).await?);
+    
+    // 从索引中获取文件路径
+    let index_path = notes_dir.join("index.json");
+    if !index_path.exists() {
+        return Err("索引文件不存在".to_string());
+    }
+
+    let mut index: IndexFile = {
+        let content = fs::read_to_string(&index_path)
+            .map_err(|e| format!("读取索引文件失败: {}", e))?;
+        serde_json::from_str(&content)
+            .map_err(|e| format!("解析索引文件失败: {}", e))?
+    };
+
+    // 查找并删除指定ID的便签
+    if let Some(pos) = index.notes.iter().position(|note| note.id == id) {
+        let entry = &index.notes[pos];
+        
+        // 构造文件路径并删除文件
+        let file_path = notes_dir.join(&entry.file.relative_path);
+        if file_path.exists() {
+            fs::remove_file(&file_path)
+                .map_err(|e| format!("删除便签文件失败: {}", e))?;
+        }
+        
+        // 从索引中移除该便签
+        index.notes.remove(pos);
+        
+        // 保存更新后的索引
+        index.app.name = "FadeNote".to_string(); // 确保app信息存在
+        // 不修改rebuildAt字段（V2规范：普通启动/更新禁止写入rebuildAt）
+        let json_content = serde_json::to_string_pretty(&index)
+            .map_err(|e| format!("序列化索引失败: {}", e))?;
+        fs::write(&index_path, json_content)
+            .map_err(|e| format!("写入索引文件失败: {}", e))?;
+
+        Ok(())
+    } else {
+        Err("找不到指定的便签".to_string())
+    }
+}
+
 // 恢复归档的便签
 #[tauri::command]
 async fn restore_note(window: tauri::WebviewWindow, id: String) -> Result<(), String> {
@@ -1443,6 +1489,7 @@ fn main() {
             update_note_window,
             restore_note,
             set_note_pinned,
+            delete_note,
             create_archive_window
         ])
         .setup(|app| {

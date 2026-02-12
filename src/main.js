@@ -3,6 +3,151 @@ const { getCurrentWindow } = window.__TAURI__.window;
 const win = getCurrentWindow();
 const textarea = document.querySelector(".paper-content");
 
+// 自定义确认对话框函数 - 轻量高级版
+async function showCustomConfirm(title, message) {
+  return new Promise((resolve) => {
+
+    // ===== 遮罩层 =====
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `
+      position:fixed;
+      top:0;
+      left:0;
+      width:100%;
+      height:100%;
+      display:flex;
+      justify-content:center;
+      align-items:center;
+      background:rgba(0,0,0,0.25);
+      backdrop-filter: blur(3px);
+      z-index:10000;
+    `;
+
+    // ===== 对话框 =====
+    const dialog = document.createElement('div');
+    dialog.style.cssText = `
+      background:#fffdf5;
+      border-radius:12px;
+      padding:22px 24px;
+      width:280px;
+      max-width:85%;
+      box-shadow:0 20px 40px rgba(0,0,0,0.15);
+      border:1px solid #e8e2d6;
+      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+      animation: fadeInScale 0.18s ease-out;
+    `;
+
+    dialog.innerHTML = `
+      <div style="text-align:center;margin-bottom:18px;">
+        <div style="
+          font-size:16px;
+          font-weight:600;
+          color:#333;
+          margin-bottom:6px;
+        ">
+          ${title}
+        </div>
+        <div style="
+          font-size:13px;
+          color:#888;
+        ">
+          ${message}
+        </div>
+      </div>
+
+      <div style="
+        display:flex;
+        justify-content:flex-end;
+        gap:12px;
+      ">
+        <button id="cancel-btn" style="
+          background:none;
+          border:none;
+          color:#666;
+          font-size:14px;
+          cursor:pointer;
+        ">
+          Cancel
+        </button>
+
+        <button id="confirm-btn" style="
+          background:none;
+          border:none;
+          color:#d9534f;
+          font-size:14px;
+          font-weight:500;
+          cursor:pointer;
+        ">
+          Delete
+        </button>
+      </div>
+    `;
+
+    // ===== 动画样式 =====
+    const style = document.createElement('style');
+    style.textContent = `
+      @keyframes fadeInScale {
+        from {
+          opacity: 0;
+          transform: scale(0.96);
+        }
+        to {
+          opacity: 1;
+          transform: scale(1);
+        }
+      }
+
+      #cancel-btn:hover {
+        opacity: 0.6;
+      }
+
+      #confirm-btn:hover {
+        opacity: 0.7;
+      }
+    `;
+    document.head.appendChild(style);
+
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+
+    // ===== 关闭逻辑 =====
+    function closeDialog(result) {
+      dialog.style.opacity = "0";
+      dialog.style.transform = "scale(0.96)";
+      overlay.style.opacity = "0";
+
+      setTimeout(() => {
+        document.body.removeChild(overlay);
+        document.head.removeChild(style);
+        resolve(result);
+      }, 150);
+    }
+
+    dialog.querySelector('#cancel-btn').addEventListener('click', () => {
+      closeDialog(false);
+    });
+
+    dialog.querySelector('#confirm-btn').addEventListener('click', () => {
+      closeDialog(true);
+    });
+
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) {
+        closeDialog(false);
+      }
+    });
+
+    document.addEventListener('keydown', function escHandler(e) {
+      if (e.key === 'Escape') {
+        document.removeEventListener('keydown', escHandler);
+        closeDialog(false);
+      }
+    });
+
+  });
+}
+
+
 // 便签ID - 将在窗口准备好后从后端获取
 let noteId = null;
 let noteIdSet = false; // 标志，防止noteId被重复设置
@@ -34,8 +179,41 @@ function initializeButtonEvents() {
     win.close();
   });
 
-  document.getElementById("btn-min").addEventListener('click', () => {
-    win.minimize();
+  document.getElementById("btn-delete").addEventListener('click', async () => {
+    console.log('Delete button clicked');
+    console.log('Current noteId:', noteId);
+    
+    if (!noteId) {
+      console.error('noteId not set');
+      return;
+    }
+    
+    // 二次确认删除 - 自定义对话框
+    const userConfirmed = await showCustomConfirm(
+      "Delete this note?",
+      "This cannot be undone."
+    );
+    
+    if (!userConfirmed) {
+      console.log('Delete cancelled by user');
+      return;
+    }
+    console.log('User confirmed deletion');
+    
+    try {
+      // 调用后端API删除便签
+      await window.__TAURI__.core.invoke('delete_note', {
+        id: noteId
+      });
+      
+      // 删除成功后只关闭当前窗口
+      win.close();
+      
+      console.log(`Note ${noteId} deleted`);
+    } catch (err) {
+      console.error('Failed to delete note:', err);
+      alert('删除便签失败：' + err);
+    }
   });
 
   // Always on Top按钮功能
