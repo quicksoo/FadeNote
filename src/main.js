@@ -3,6 +3,8 @@ const win = getCurrentWindow();
 const editor = document.querySelector(".paper-content");
 const toolbar = document.querySelector(".editor-toolbar");
 const paper = document.querySelector(".paper");
+const saveStatus = document.getElementById("note-save-status");
+const lifecycleStatus = document.getElementById("note-lifecycle-status");
 
 async function showCustomConfirm(title, message) {
   return new Promise((resolve) => {
@@ -75,6 +77,7 @@ let isPinned = false;
 let markdownSource = "";
 let isRendering = false;
 let isComposing = false;
+let currentNoteDetail = null;
 
 const urlParams = new URLSearchParams(window.location.search);
 const urlNoteId = urlParams.get('noteId');
@@ -109,6 +112,32 @@ function plainTitleFromMarkdown(markdown) {
     .slice(0, 40);
 
   return `FadeNote - ${text || 'New Note'}`;
+}
+
+function setSaveStatus(status, label) {
+  if (!saveStatus) return;
+  saveStatus.textContent = label;
+  saveStatus.className = status;
+}
+
+function formatRemainingTime(expireAt) {
+  if (!expireAt) return "Auto archive";
+  const remainingMs = new Date(expireAt).getTime() - Date.now();
+  if (!Number.isFinite(remainingMs)) return "Auto archive";
+  if (remainingMs <= 0) return "Archiving soon";
+
+  const hours = Math.ceil(remainingMs / (1000 * 60 * 60));
+  if (hours < 24) return `${hours}h left`;
+  return `${Math.ceil(hours / 24)}d left`;
+}
+
+function updateLifecycleStatus() {
+  if (!lifecycleStatus) return;
+  if (isPinned || currentNoteDetail?.pinned) {
+    lifecycleStatus.textContent = "Pinned · stays";
+    return;
+  }
+  lifecycleStatus.textContent = formatRemainingTime(currentNoteDetail?.expireAt);
 }
 
 async function updateWindowTitle() {
@@ -257,6 +286,7 @@ function setMarkdownSource(value, preserveCaret = false) {
 
 function scheduleAutoSave() {
   if (idleTimer) clearTimeout(idleTimer);
+  setSaveStatus('saving', 'Saving...');
 
   idleTimer = setTimeout(async () => {
     if (!noteId) return;
@@ -264,6 +294,7 @@ function scheduleAutoSave() {
       await saveCurrentNoteContent();
     } catch (err) {
       console.error('Failed to save note content:', err);
+      setSaveStatus('error', 'Save failed');
     }
   }, 3000);
 
@@ -279,11 +310,13 @@ async function saveCurrentNoteContent() {
   }
 
   markdownSource = readMarkdownFromEditor();
+  setSaveStatus('saving', 'Saving...');
   await window.__TAURI__.core.invoke('save_note_content', {
     id: noteId,
     content: markdownSource
   });
   await updateWindowTitle();
+  setSaveStatus('saved', 'Saved');
 }
 
 function replaceSelection(text, caretShift = 0) {
@@ -401,6 +434,7 @@ function initializeButtonEvents() {
       await saveCurrentNoteContent();
     } catch (err) {
       console.error('Failed to save note before close:', err);
+      setSaveStatus('error', 'Save failed');
     }
     win.close();
   });
@@ -458,11 +492,14 @@ function initializeButtonEvents() {
     try {
       isPinned = !isPinned;
       await window.__TAURI__.core.invoke('set_note_pinned', { id: noteId, pinned: isPinned });
+      if (currentNoteDetail) currentNoteDetail.pinned = isPinned;
       updatePinButtonStyle();
+      updateLifecycleStatus();
     } catch (err) {
       console.error('Failed to set pin status:', err);
       isPinned = !isPinned;
       updatePinButtonStyle();
+      updateLifecycleStatus();
     }
   });
 }
@@ -473,8 +510,10 @@ async function updatePinStatus() {
     const activeNotes = await window.__TAURI__.core.invoke('get_active_notes');
     const noteDetail = activeNotes.find(note => note.id === noteId);
     if (noteDetail) {
+      currentNoteDetail = noteDetail;
       isPinned = noteDetail.pinned || false;
       updatePinButtonStyle();
+      updateLifecycleStatus();
     }
   } catch (err) {
     console.warn('Failed to get note pin status:', err);
@@ -618,10 +657,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     const activeNotes = await window.__TAURI__.core.invoke('get_active_notes');
     const noteDetail = activeNotes.find(note => note.id === noteId);
+    currentNoteDetail = noteDetail || null;
     if (noteDetail?.window) {
       await win.setPosition(new window.__TAURI__.window.Position(noteDetail.window.x, noteDetail.window.y));
       await win.setSize(new window.__TAURI__.window.Size(noteDetail.window.width, noteDetail.window.height));
     }
+    updateLifecycleStatus();
     await updatePinStatus();
   } catch (err) {
     console.warn('Failed to get note position info:', err);
@@ -630,9 +671,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     const savedContent = await window.__TAURI__.core.invoke('load_note', { id: noteId });
     setMarkdownSource(savedContent || "", false);
+    setSaveStatus('saved', 'Saved');
+    updateLifecycleStatus();
   } catch (err) {
     console.warn('Failed to load note content:', err);
     setMarkdownSource("", false);
+    setSaveStatus('error', 'Load failed');
   }
 
   window.addEventListener('beforeunload', async () => {
@@ -640,6 +684,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       await saveCurrentNoteContent();
     } catch (err) {
       console.error('Failed to save note content:', err);
+      setSaveStatus('error', 'Save failed');
     }
   });
 

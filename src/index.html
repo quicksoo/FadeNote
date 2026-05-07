@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -21,8 +21,8 @@
       <div class="editor-toolbar" data-tauri-drag-region="false">
         <button type="button" class="toolbar-btn" data-format="bold" title="Bold (Ctrl+B)">B</button>
         <button type="button" class="toolbar-btn" data-format="strike" title="Strike (Ctrl+Shift+X)">S</button>
-        <button type="button" class="toolbar-btn" data-format="list" title="List">• List</button>
-        <button type="button" class="toolbar-btn" data-format="task" title="Task">☐ Task</button>
+        <button type="button" class="toolbar-btn" data-format="list" title="List">List</button>
+        <button type="button" class="toolbar-btn" data-format="task" title="Task">Task</button>
       </div>
 
       <!-- Markdown editor: stores markdown, previews supported syntax inline -->
@@ -31,6 +31,11 @@
         data-tauri-drag-region="false"
         spellcheck="false"
       ></div>
+
+      <div class="note-footer" data-tauri-drag-region="false">
+        <span id="note-lifecycle-status">Auto archive</span>
+        <span id="note-save-status">Saved</span>
+      </div>
     </div>
 
   </div>
@@ -38,3 +43,4 @@
   <script src="./main.js"></script>
 </body>
 </html>
+

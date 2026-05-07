@@ -4,6 +4,7 @@ const recurrenceInput = document.getElementById('recurrence');
 const weekdaysRow = document.getElementById('weekdays-row');
 const weekdayInputs = Array.from(document.querySelectorAll('.weekday-row input'));
 const statusEl = document.getElementById('status');
+const saveDirInput = document.getElementById('save-dir');
 
 function setStatus(message) {
   statusEl.textContent = message;
@@ -37,10 +38,15 @@ function writeForm(settings) {
 
 async function loadSettings() {
   try {
-    const settings = await window.__TAURI__.core.invoke('get_schedule_settings');
+    const [settings, saveDir] = await Promise.all([
+      window.__TAURI__.core.invoke('get_schedule_settings'),
+      window.__TAURI__.core.invoke('get_app_data_directory')
+    ]);
     writeForm(settings);
+    saveDirInput.value = saveDir;
   } catch (err) {
     console.error('Failed to load settings:', err);
+    saveDirInput.value = 'Unavailable';
     setStatus('Failed to load settings');
   }
 }

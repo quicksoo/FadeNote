@@ -194,3 +194,27 @@ html, body {
   margin-right: 6px;
   vertical-align: middle;
 }
+
+.note-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 12px 8px;
+  border-top: 1px solid rgba(0, 0, 0, 0.05);
+  color: #9b958c;
+  font-size: 11px;
+  line-height: 1;
+  user-select: none;
+}
+
+#note-save-status.saving {
+  color: #b58a35;
+}
+
+#note-save-status.saved {
+  color: #7f9871;
+}
+
+#note-save-status.error {
+  color: #c76a5a;
+}

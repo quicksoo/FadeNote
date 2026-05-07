@@ -1444,6 +1444,11 @@ async fn get_schedule_settings() -> Result<ScheduleSettings, String> {
 }
 
 #[tauri::command]
+async fn get_app_data_directory() -> Result<String, String> {
+    Ok(get_app_data_dir()?.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 async fn save_schedule_settings(settings: ScheduleSettings) -> Result<(), String> {
     save_schedule_settings_to_disk(&settings)
 }
@@ -1642,6 +1647,7 @@ fn main() {
             create_archive_window,
             create_settings_window,
             get_schedule_settings,
+            get_app_data_directory,
             save_schedule_settings,
             raise_active_notes_once
         ])
@@ -1652,7 +1658,6 @@ fn main() {
             // 创建系统托盘菜单项
             let new_note_item = MenuItem::with_id(app, "new_note", "New Note", true, None::<&str>).unwrap();
             let show_notes_item = MenuItem::with_id(app, "show_notes", "Show Notes", true, None::<&str>).unwrap();
-            let raise_now_item = MenuItem::with_id(app, "raise_now", "Raise Now", true, None::<&str>).unwrap();
             let settings_item = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>).unwrap();
             let archive_item = MenuItem::with_id(app, "archive", "Archive", true, None::<&str>).unwrap();
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>).unwrap();
@@ -1661,7 +1666,6 @@ fn main() {
             let tray_menu = MenuBuilder::new(app)
                 .item(&new_note_item)
                 .item(&show_notes_item)
-                .item(&raise_now_item)
                 .separator()
                 .item(&settings_item)
                 .item(&archive_item)
@@ -1824,12 +1828,6 @@ fn main() {
                             let app_handle = _app.clone();
                             tauri::async_runtime::spawn(async move {
                                 let _ = create_settings_window(app_handle).await;
-                            });
-                        },
-                        "raise_now" => {
-                            let app_handle = _app.clone();
-                            tauri::async_runtime::spawn(async move {
-                                let _ = raise_active_notes_once_impl(app_handle).await;
                             });
                         },
                         "quit" => {

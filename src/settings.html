@@ -22,7 +22,7 @@
     h1 { font-size: 20px; margin: 0 0 16px; }
     .row { margin: 14px 0; }
     label { display: block; font-size: 13px; color: #6a6257; margin-bottom: 6px; }
-    input[type="time"], select {
+    input[type="time"], input[readonly], select {
       width: 100%;
       border: 1px solid #ddd5c7;
       border-radius: 8px;
@@ -30,6 +30,11 @@
       color: #333;
       font-size: 14px;
       padding: 8px 10px;
+    }
+    input[readonly] {
+      background: #f1eee7;
+      color: #8a8176;
+      cursor: default;
     }
     .switch-row, .weekday-row, .actions {
       display: flex;
@@ -93,6 +98,11 @@
     <div class="actions">
       <button class="primary" id="save">Save</button>
       <button class="secondary" id="raise-now">Raise Now</button>
+    </div>
+
+    <div class="row">
+      <label for="save-dir">File save directory</label>
+      <input id="save-dir" type="text" readonly value="Loading..." />
     </div>
 
     <div class="status" id="status"></div>
