@@ -18,11 +18,19 @@
         <span class="dot blue btn-pin" id="btn-pin" data-tauri-drag-region="false" title="Pin"></span>
       </div>
 
-      <!-- Content area: Full textarea -->
-      <textarea
-        class="paper-content"
-        placeholder="Write something..."
-      ></textarea>
+      <div class="editor-toolbar" data-tauri-drag-region="false">
+        <button type="button" class="toolbar-btn" data-format="bold" title="Bold (Ctrl+B)">B</button>
+        <button type="button" class="toolbar-btn" data-format="strike" title="Strike (Ctrl+Shift+X)">S</button>
+        <button type="button" class="toolbar-btn" data-format="list" title="List">• List</button>
+        <button type="button" class="toolbar-btn" data-format="task" title="Task">☐ Task</button>
+      </div>
+
+      <!-- Markdown editor: stores markdown, previews supported syntax inline -->
+      <div
+        class="paper-content markdown-editor"
+        data-tauri-drag-region="false"
+        spellcheck="false"
+      ></div>
     </div>
 
   </div>

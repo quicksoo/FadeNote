@@ -2,6 +2,15 @@
 const { getCurrentWindow } = window.__TAURI__.window;
 const win = getCurrentWindow();
 
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
 // 关闭按钮事件
 document.getElementById('btn-close').addEventListener('click', () => {
   win.close();
@@ -26,17 +35,18 @@ async function loadArchivedNotes() {
       const noteElement = document.createElement('div');
       noteElement.className = 'note-item';
       
-      // 格式化时间
-      const lastActiveTime = note.lastActiveAt ? new Date(note.lastActiveAt).toLocaleString() : 'Unknown time';
+      // 格式化归档时间，缺失时再回退到最后活跃时间
+      const archiveTimeSource = note.archivedAt || note.lastActiveAt;
+      const archivedTime = archiveTimeSource ? new Date(archiveTimeSource).toLocaleString() : 'Unknown time';
       
       // 获取预览内容，如果没有则显示占位符
       const previewText = note.cachedPreview || '(Archived note)';
       
       noteElement.innerHTML = `
-        <div class="note-preview">${previewText}</div>
+        <div class="note-preview">${escapeHtml(previewText)}</div>
         <div class="note-meta">
-          <span>Archived: ${lastActiveTime}</span>
-          <span>ID: ${note.id.substring(0, 8)}...</span>
+          <span>Archived: ${escapeHtml(archivedTime)}</span>
+          <span>ID: ${escapeHtml(note.id.substring(0, 8))}...</span>
         </div>
       `;
       

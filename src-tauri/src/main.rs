@@ -3,8 +3,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration as StdDuration;
 
-use chrono::{DateTime, Duration, Utc, Local};
+use chrono::{Datelike, DateTime, Duration, Local, Timelike, Utc};
 use dirs::data_dir;
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, menu::{MenuBuilder, MenuItem}, tray::TrayIconBuilder};
@@ -143,6 +144,28 @@ struct IndexFile {
     notes: Vec<NoteEntry>,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+struct ScheduleSettings {
+    enabled: bool,
+    time: String,
+    recurrence: String,
+    weekdays: Vec<u32>,
+    #[serde(rename = "lastTriggeredKey")]
+    last_triggered_key: Option<String>,
+}
+
+impl Default for ScheduleSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            time: "09:00".to_string(),
+            recurrence: "daily".to_string(),
+            weekdays: vec![1, 2, 3, 4, 5],
+            last_triggered_key: None,
+        }
+    }
+}
+
 // 应用状态
 struct AppState {
     notes_directory: Mutex<Option<PathBuf>>,
@@ -151,6 +174,95 @@ struct AppState {
 // 获取当前ISO 8601时间戳
 fn get_current_iso8601_time() -> String {
     Local::now().to_rfc3339()
+}
+
+fn load_schedule_settings_from_disk() -> ScheduleSettings {
+    let path = match get_app_data_dir() {
+        Ok(dir) => dir.join("settings.json"),
+        Err(_) => return ScheduleSettings::default(),
+    };
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(_) => return ScheduleSettings::default(),
+    };
+    serde_json::from_str(&content).unwrap_or_default()
+}
+
+fn save_schedule_settings_to_disk(settings: &ScheduleSettings) -> Result<(), String> {
+    let app_data_dir = get_app_data_dir()?;
+    fs::create_dir_all(&app_data_dir).map_err(|e| format!("create settings directory failed: {}", e))?;
+    let content = serde_json::to_string_pretty(settings)
+        .map_err(|e| format!("serialize settings failed: {}", e))?;
+    fs::write(app_data_dir.join("settings.json"), content)
+        .map_err(|e| format!("write settings failed: {}", e))
+}
+
+fn window_title_from_preview(preview: Option<&String>) -> String {
+    match preview.map(|value| value.trim()).filter(|value| !value.is_empty()) {
+        Some(preview) => format!("FadeNote - {}", preview.chars().take(40).collect::<String>()),
+        None => "FadeNote - New Note".to_string(),
+    }
+}
+
+fn should_trigger_schedule(settings: &ScheduleSettings, now: &DateTime<Local>) -> Option<String> {
+    if !settings.enabled {
+        return None;
+    }
+    let mut parts = settings.time.split(':');
+    let hour = parts.next()?.parse::<u32>().ok()?;
+    let minute = parts.next()?.parse::<u32>().ok()?;
+    if now.hour() != hour || now.minute() != minute {
+        return None;
+    }
+    let weekday = now.weekday().number_from_monday();
+    if settings.recurrence == "weekly" && !settings.weekdays.contains(&weekday) {
+        return None;
+    }
+    let key = format!("{}-{:02}:{:02}", now.format("%Y-%m-%d"), hour, minute);
+    if settings.last_triggered_key.as_deref() == Some(&key) {
+        return None;
+    }
+    Some(key)
+}
+
+async fn raise_window_once(window: tauri::WebviewWindow) {
+    let was_always_on_top = window.is_always_on_top().unwrap_or(false);
+    let _ = window.show();
+    let _ = window.unminimize();
+    let _ = window.set_always_on_top(true);
+    let _ = window.set_focus();
+    std::thread::sleep(StdDuration::from_millis(350));
+    if !was_always_on_top {
+        let _ = window.set_always_on_top(false);
+    }
+}
+
+async fn raise_active_notes_once_impl(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let app_data_dir = get_app_data_dir()?;
+    let index = validate_and_fix_index(&app_data_dir)?;
+    let windows = app_handle.webview_windows();
+    for entry in index.notes.iter().filter(|entry| is_active(entry)) {
+        let label = format!("note-{}", entry.id);
+        if let Some(window) = windows.get(&label) {
+            raise_window_once(window.clone()).await;
+            continue;
+        }
+        if let Some(window_info) = entry.window.clone() {
+            create_note_window(
+                app_handle.clone(),
+                label.clone(),
+                window_title_from_preview(entry.cached_preview.as_ref()),
+                window_info.width as u32,
+                window_info.height as u32,
+                Some(window_info.x as i32),
+                Some(window_info.y as i32),
+            ).await?;
+            if let Some(window) = app_handle.get_webview_window(&label) {
+                raise_window_once(window).await;
+            }
+        }
+    }
+    Ok(())
 }
 
 // Fix 1: 引入「Domain Query 层」（纯判断）
@@ -1304,6 +1416,43 @@ async fn create_archive_window(app_handle: tauri::AppHandle) -> Result<(), Strin
     Ok(())
 }
 
+#[tauri::command]
+async fn create_settings_window(app_handle: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app_handle.get_webview_window("settings") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    tauri::WebviewWindowBuilder::new(
+        &app_handle,
+        "settings",
+        tauri::WebviewUrl::App("settings.html".into()),
+    )
+    .title("FadeNote Settings")
+    .inner_size(420.0, 360.0)
+    .resizable(false)
+    .decorations(true)
+    .visible(true)
+    .build()
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_schedule_settings() -> Result<ScheduleSettings, String> {
+    Ok(load_schedule_settings_from_disk())
+}
+
+#[tauri::command]
+async fn save_schedule_settings(settings: ScheduleSettings) -> Result<(), String> {
+    save_schedule_settings_to_disk(&settings)
+}
+
+#[tauri::command]
+async fn raise_active_notes_once(app_handle: tauri::AppHandle) -> Result<(), String> {
+    raise_active_notes_once_impl(app_handle).await
+}
+
 // 初始化便签目录结构（通过路径）
 pub async fn initialize_notes_directory_by_path(notes_dir: std::path::PathBuf) -> Result<String, String> {
     std::fs::create_dir_all(&notes_dir).map_err(|e| format!("创建AppData目录失败: {}", e))?;
@@ -1490,7 +1639,11 @@ fn main() {
             restore_note,
             set_note_pinned,
             delete_note,
-            create_archive_window
+            create_archive_window,
+            create_settings_window,
+            get_schedule_settings,
+            save_schedule_settings,
+            raise_active_notes_once
         ])
         .setup(|app| {
             // 为应用设置防止退出行为
@@ -1499,6 +1652,8 @@ fn main() {
             // 创建系统托盘菜单项
             let new_note_item = MenuItem::with_id(app, "new_note", "New Note", true, None::<&str>).unwrap();
             let show_notes_item = MenuItem::with_id(app, "show_notes", "Show Notes", true, None::<&str>).unwrap();
+            let raise_now_item = MenuItem::with_id(app, "raise_now", "Raise Now", true, None::<&str>).unwrap();
+            let settings_item = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>).unwrap();
             let archive_item = MenuItem::with_id(app, "archive", "Archive", true, None::<&str>).unwrap();
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>).unwrap();
             
@@ -1506,7 +1661,9 @@ fn main() {
             let tray_menu = MenuBuilder::new(app)
                 .item(&new_note_item)
                 .item(&show_notes_item)
+                .item(&raise_now_item)
                 .separator()
+                .item(&settings_item)
                 .item(&archive_item)
                 .separator()
                 .item(&quit_item)
@@ -1663,6 +1820,18 @@ fn main() {
                                 let _ = create_archive_window(app_handle).await;
                             });
                         },
+                        "settings" => {
+                            let app_handle = _app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let _ = create_settings_window(app_handle).await;
+                            });
+                        },
+                        "raise_now" => {
+                            let app_handle = _app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let _ = raise_active_notes_once_impl(app_handle).await;
+                            });
+                        },
                         "quit" => {
                             // 退出前确保所有状态持久化
                             tauri::async_runtime::spawn(async move {
@@ -1678,6 +1847,24 @@ fn main() {
                     }
                 })
                 .build(app).unwrap();
+
+            let scheduler_app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    let mut settings = load_schedule_settings_from_disk();
+                    let now = Local::now();
+                    if let Some(trigger_key) = should_trigger_schedule(&settings, &now) {
+                        if let Err(e) = raise_active_notes_once_impl(scheduler_app_handle.clone()).await {
+                            eprintln!("scheduled raise failed: {}", e);
+                        }
+                        settings.last_triggered_key = Some(trigger_key);
+                        if let Err(e) = save_schedule_settings_to_disk(&settings) {
+                            eprintln!("save scheduled raise record failed: {}", e);
+                        }
+                    }
+                    std::thread::sleep(StdDuration::from_secs(30));
+                }
+            });
             
             // 初始化AppData目录
             tauri::async_runtime::block_on(async {
