@@ -104,10 +104,9 @@ function plainTitleFromMarkdown(markdown) {
   if (!firstLine) return "FadeNote - New Note";
 
   const text = firstLine
-    .replace(/^[-*]\s+/, '')
     .replace(/^[-*]\s+\[[ xX]\]\s+/, '')
+    .replace(/^[-*]\s+/, '')
     .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/~~([^~]+)~~/g, '$1')
     .trim()
     .slice(0, 40);
 
@@ -148,84 +147,188 @@ async function updateWindowTitle() {
   }
 }
 
-function getCaretOffset() {
-  const selection = window.getSelection();
-  if (!selection || selection.rangeCount === 0 || !editor.contains(selection.anchorNode)) return 0;
-  const range = selection.getRangeAt(0).cloneRange();
-  range.selectNodeContents(editor);
-  range.setEnd(selection.anchorNode, selection.anchorOffset);
-  return range.toString().length;
-}
-
-function setCaretOffset(offset) {
-  const selection = window.getSelection();
-  if (!selection) return;
-
-  let remaining = Math.max(0, offset);
-  const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
-  let node = walker.nextNode();
-
-  while (node) {
-    if (remaining <= node.nodeValue.length) {
-      const range = document.createRange();
-      range.setStart(node, remaining);
-      range.collapse(true);
-      selection.removeAllRanges();
-      selection.addRange(range);
-      return;
-    }
-    remaining -= node.nodeValue.length;
-    node = walker.nextNode();
+function parseMarkdownLine(line) {
+  const taskMatch = line.match(/^(\s*)- \[([ xX])\]\s?(.*)$/);
+  if (taskMatch) {
+    return {
+      type: 'task',
+      checked: taskMatch[2].toLowerCase() === 'x',
+      content: taskMatch[3] || ''
+    };
   }
 
-  const range = document.createRange();
-  range.selectNodeContents(editor);
-  range.collapse(false);
-  selection.removeAllRanges();
-  selection.addRange(range);
-}
-
-function getSelectionOffsets() {
-  const selection = window.getSelection();
-  if (!selection || selection.rangeCount === 0 || !editor.contains(selection.anchorNode)) {
-    const offset = markdownSource.length;
-    return { start: offset, end: offset };
+  const listMatch = line.match(/^\s*-\s?(.*)$/);
+  if (listMatch) {
+    return {
+      type: 'list',
+      checked: false,
+      content: listMatch[1] || ''
+    };
   }
-
-  const range = selection.getRangeAt(0);
-  const startRange = range.cloneRange();
-  startRange.selectNodeContents(editor);
-  startRange.setEnd(range.startContainer, range.startOffset);
-
-  const endRange = range.cloneRange();
-  endRange.selectNodeContents(editor);
-  endRange.setEnd(range.endContainer, range.endOffset);
 
   return {
-    start: startRange.toString().length,
-    end: endRange.toString().length
+    type: 'paragraph',
+    checked: false,
+    content: line || ''
   };
 }
 
-function setSelectionOffsets(start, end) {
-  setCaretOffset(start);
-  const selection = window.getSelection();
-  if (!selection || selection.rangeCount === 0) return;
-
-  const startPosition = findTextPosition(start);
-  const endPosition = findTextPosition(end);
-  if (!startPosition || !endPosition) return;
-
-  const range = document.createRange();
-  range.setStart(startPosition.node, startPosition.offset);
-  range.setEnd(endPosition.node, endPosition.offset);
-  selection.removeAllRanges();
-  selection.addRange(range);
+function buildMarkdownLine(type, content, checked = false) {
+  if (type === 'task') return `- [${checked ? 'x' : ' '}] ${content}`;
+  if (type === 'list') return `- ${content}`;
+  return content;
 }
 
-function findTextPosition(offset) {
+function parseInlineMarkdown(content) {
+  const fragments = [];
+  let index = 0;
+
+  while (index < content.length) {
+    const boldStart = content.indexOf('**', index);
+    const next = boldStart;
+
+    if (next === -1) {
+      fragments.push({ type: 'text', text: content.slice(index) });
+      break;
+    }
+
+    if (next > index) {
+      fragments.push({ type: 'text', text: content.slice(index, next) });
+    }
+
+    const marker = '**';
+    const close = content.indexOf(marker, next + 2);
+    if (close === -1) {
+      fragments.push({ type: 'text', text: marker });
+      index = next + 2;
+      continue;
+    }
+
+    fragments.push({
+      type: 'bold',
+      text: content.slice(next + 2, close)
+    });
+    index = close + 2;
+  }
+
+  return fragments;
+}
+
+function renderInlineMarkdown(content) {
+  return parseInlineMarkdown(content)
+    .map((fragment) => {
+      const text = escapeHtml(fragment.text);
+      if (fragment.type === 'bold') return `<strong class="md-bold">${text || '<br>'}</strong>`;
+      return text;
+    })
+    .join('') || '<br>';
+}
+
+function renderMarkdownLine(line, lineIndex) {
+  const parsed = parseMarkdownLine(line);
+  const checkedClass = parsed.checked ? ' checked' : '';
+  const checkedAttr = parsed.checked ? 'true' : 'false';
+  const content = renderInlineMarkdown(parsed.content);
+
+  if (parsed.type === 'task') {
+    return `<div class="editor-line task-line${checkedClass}" data-line="${lineIndex}" data-type="task" data-checked="${checkedAttr}"><button type="button" class="task-toggle" contenteditable="false" data-line="${lineIndex}" aria-label="Toggle task">${parsed.checked ? '✓' : ''}</button><span class="line-content" contenteditable="true">${content}</span></div>`;
+  }
+
+  if (parsed.type === 'list') {
+    return `<div class="editor-line list-line" data-line="${lineIndex}" data-type="list" data-checked="false"><span class="list-bullet" contenteditable="false"></span><span class="line-content" contenteditable="true">${content}</span></div>`;
+  }
+
+  return `<div class="editor-line paragraph-line" data-line="${lineIndex}" data-type="paragraph" data-checked="false"><span class="line-content" contenteditable="true">${content}</span></div>`;
+}
+
+function getMarkdownLines() {
+  return markdownSource.split('\n');
+}
+
+function renderMarkdown(preserveCaret = true, nextCaret = null) {
+  const caret = nextCaret || (preserveCaret ? getCaretPosition() : { line: 0, offset: 0 });
+  const lines = getMarkdownLines();
+  isRendering = true;
+  editor.innerHTML = lines.map((line, index) => renderMarkdownLine(line, index)).join('');
+  editor.classList.toggle('is-empty', markdownSource.trim() === '');
+  isRendering = false;
+  if (preserveCaret || nextCaret) setCaretPosition(caret.line, caret.offset);
+}
+
+function serializeInlineNode(node) {
+  if (!node) return '';
+  if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || '';
+  if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+  if (node.classList.contains('task-toggle') || node.classList.contains('list-bullet')) return '';
+  if (node.tagName === 'BR') return '';
+
+  const inner = Array.from(node.childNodes).map(serializeInlineNode).join('');
+  if (node.classList.contains('md-bold') || node.tagName === 'STRONG' || node.tagName === 'B') return `**${inner}**`;
+  return inner;
+}
+
+function serializeLine(lineElement) {
+  const type = lineElement.dataset.type || 'paragraph';
+  const checked = lineElement.dataset.checked === 'true';
+  const contentElement = lineElement.querySelector('.line-content');
+  const content = Array.from(contentElement?.childNodes || []).map(serializeInlineNode).join('');
+  return buildMarkdownLine(type, content.replace(/\u00a0/g, ' '), checked);
+}
+
+function readMarkdownFromEditor() {
+  const lineElements = Array.from(editor.querySelectorAll('.editor-line'));
+  if (lineElements.length === 0) return '';
+  return lineElements.map(serializeLine).join('\n');
+}
+
+function setMarkdownSource(value, preserveCaret = false) {
+  markdownSource = value || '';
+  renderMarkdown(preserveCaret);
+  updateWindowTitle();
+}
+
+function getLineElement(node) {
+  if (!node) return editor.querySelector('.editor-line');
+  const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  return element?.closest('.editor-line') || editor.querySelector('.editor-line');
+}
+
+function getLineContentElement(lineElement) {
+  return lineElement?.querySelector('.line-content') || null;
+}
+
+function getTextOffsetWithin(element, container, offset) {
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  try {
+    range.setEnd(container, offset);
+  } catch {
+    range.collapse(false);
+  }
+  return range.toString().length;
+}
+
+function getCaretPosition() {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0 || !editor.contains(selection.anchorNode)) {
+    return { line: Math.max(0, getMarkdownLines().length - 1), offset: 0 };
+  }
+
+  const lineElement = getLineElement(selection.anchorNode);
+  const contentElement = getLineContentElement(lineElement);
+  const line = Number(lineElement?.dataset.line || 0);
+  if (!contentElement) return { line, offset: 0 };
+
+  return {
+    line,
+    offset: Math.max(0, getTextOffsetWithin(contentElement, selection.anchorNode, selection.anchorOffset))
+  };
+}
+
+function findTextPositionInElement(element, offset) {
   let remaining = Math.max(0, offset);
-  const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
   let node = walker.nextNode();
 
   while (node) {
@@ -234,54 +337,115 @@ function findTextPosition(offset) {
     node = walker.nextNode();
   }
 
-  const last = editor.lastChild;
-  if (last && last.nodeType === Node.TEXT_NODE) return { node: last, offset: last.nodeValue.length };
   return null;
 }
 
-function renderInlineMarkdown(line) {
-  return escapeHtml(line)
-    .replace(/\*\*([^*\n]+)\*\*/g, '<span class="md-syntax">**</span><span class="md-bold">$1</span><span class="md-syntax">**</span>')
-    .replace(/~~([^~\n]+)~~/g, '<span class="md-syntax">~~</span><span class="md-strike">$1</span><span class="md-syntax">~~</span>');
+function scrollLineIntoView(lineElement) {
+  if (!lineElement || !editor) return;
+
+  const editorRect = editor.getBoundingClientRect();
+  const lineRect = lineElement.getBoundingClientRect();
+  const topPadding = 12;
+  const bottomPadding = 14;
+
+  if (lineRect.bottom > editorRect.bottom - bottomPadding) {
+    editor.scrollTop += lineRect.bottom - editorRect.bottom + bottomPadding;
+  } else if (lineRect.top < editorRect.top + topPadding) {
+    editor.scrollTop -= editorRect.top + topPadding - lineRect.top;
+  }
 }
 
-function renderMarkdownLine(line, lineIndex) {
-  const taskMatch = line.match(/^(\s*)- \[([ xX])\]\s?(.*)$/);
-  if (taskMatch) {
-    const checked = taskMatch[2].toLowerCase() === 'x';
-    return `${escapeHtml(taskMatch[1])}<span class="md-list-marker">- </span><span class="md-task-marker" data-line="${lineIndex}">[${checked ? 'x' : ' '}]</span> ${renderInlineMarkdown(taskMatch[3])}`;
+function setCaretPosition(lineIndex, offset) {
+  const lines = Array.from(editor.querySelectorAll('.editor-line'));
+  const lineElement = lines[Math.min(Math.max(0, lineIndex), Math.max(0, lines.length - 1))];
+  const contentElement = getLineContentElement(lineElement);
+  if (!contentElement) return;
+
+  const selection = window.getSelection();
+  const range = document.createRange();
+  const textPosition = findTextPositionInElement(contentElement, offset);
+
+  if (textPosition) {
+    range.setStart(textPosition.node, textPosition.offset);
+  } else {
+    range.selectNodeContents(contentElement);
+    range.collapse(false);
   }
 
-  const listMatch = line.match(/^(\s*)-\s+(.*)$/);
-  if (listMatch) {
-    return `${escapeHtml(listMatch[1])}<span class="md-list-marker">- </span>${renderInlineMarkdown(listMatch[2])}`;
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  requestAnimationFrame(() => scrollLineIntoView(lineElement));
+}
+
+function getSelectionPositions() {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0 || !editor.contains(selection.anchorNode)) {
+    const caret = getCaretPosition();
+    return { start: caret, end: caret, collapsed: true };
   }
 
-  return renderInlineMarkdown(line);
+  const range = selection.getRangeAt(0);
+  const startLine = getLineElement(range.startContainer);
+  const endLine = getLineElement(range.endContainer);
+  const startContent = getLineContentElement(startLine);
+  const endContent = getLineContentElement(endLine);
+
+  const start = {
+    line: Number(startLine?.dataset.line || 0),
+    offset: startContent ? getTextOffsetWithin(startContent, range.startContainer, range.startOffset) : 0
+  };
+  const end = {
+    line: Number(endLine?.dataset.line || start.line),
+    offset: endContent ? getTextOffsetWithin(endContent, range.endContainer, range.endOffset) : start.offset
+  };
+
+  return { start, end, collapsed: range.collapsed };
 }
 
-function renderMarkdown(preserveCaret = true) {
-  const caretOffset = preserveCaret ? getCaretOffset() : 0;
-  isRendering = true;
-  editor.innerHTML = markdownSource
-    .split('\n')
-    .map((line, index) => renderMarkdownLine(line, index))
-    .join('\n');
-  isRendering = false;
-  if (preserveCaret) setCaretOffset(Math.min(caretOffset, editor.textContent.length));
+function visibleToMarkdownOffset(content, visibleOffset) {
+  let visible = 0;
+  let index = 0;
+  const activeMarkers = [];
+
+  while (index < content.length) {
+    const marker = content.slice(index, index + 2);
+    if (marker === '**') {
+      const isClosingMarker = activeMarkers.at(-1) === marker;
+      if (isClosingMarker && visible >= visibleOffset) return index;
+
+      const close = content.indexOf(marker, index + 2);
+      if (!isClosingMarker && close !== -1) {
+        activeMarkers.push(marker);
+        index += 2;
+        continue;
+      }
+
+      if (isClosingMarker) activeMarkers.pop();
+      index += 2;
+      continue;
+    }
+
+    if (visible >= visibleOffset) return index;
+    visible += 1;
+    index += 1;
+  }
+  return content.length;
 }
 
-function readMarkdownFromEditor() {
-  return editor.innerText
-    .replace(/\r\n/g, '\n')
-    .replace(/\u00a0/g, ' ')
-    .replace(/\n$/, '');
-}
-
-function setMarkdownSource(value, preserveCaret = false) {
-  markdownSource = value || "";
-  renderMarkdown(preserveCaret);
-  updateWindowTitle();
+function markdownToVisibleOffset(content, markdownOffset) {
+  let visible = 0;
+  let index = 0;
+  while (index < Math.min(markdownOffset, content.length)) {
+    const marker = content.slice(index, index + 2);
+    if (marker === '**') {
+      index += 2;
+      continue;
+    }
+    visible += 1;
+    index += 1;
+  }
+  return visible;
 }
 
 function scheduleAutoSave() {
@@ -319,95 +483,172 @@ async function saveCurrentNoteContent() {
   setSaveStatus('saved', 'Saved');
 }
 
-function replaceSelection(text, caretShift = 0) {
-  const { start, end } = getSelectionOffsets();
+function syncEditorFromDom(preserveCaret = true) {
+  const caret = getCaretPosition();
   markdownSource = readMarkdownFromEditor();
-  markdownSource = markdownSource.slice(0, start) + text + markdownSource.slice(end);
-  renderMarkdown(false);
-  const caret = start + text.length + caretShift;
-  setCaretOffset(caret);
+  renderMarkdown(preserveCaret, caret);
   updateWindowTitle();
   scheduleAutoSave();
 }
 
 function toggleInlineFormat(marker) {
   markdownSource = readMarkdownFromEditor();
-  let { start, end } = getSelectionOffsets();
+  const selection = getSelectionPositions();
 
-  if (start === end) {
-    replaceSelection(`${marker}${marker}`, -marker.length);
+  if (selection.collapsed) {
+      document.execCommand('bold');
     return;
   }
 
-  const selected = markdownSource.slice(start, end);
-  const before = markdownSource.slice(Math.max(0, start - marker.length), start);
-  const after = markdownSource.slice(end, end + marker.length);
+  const lines = getMarkdownLines();
+  const lineIndex = selection.start.line;
+  const parsed = parseMarkdownLine(lines[lineIndex] || '');
 
-  if (before === marker && after === marker) {
-    markdownSource = markdownSource.slice(0, start - marker.length) + selected + markdownSource.slice(end + marker.length);
-    start -= marker.length;
-    end -= marker.length;
+  let start = visibleToMarkdownOffset(parsed.content, selection.start.offset);
+  let end = selection.end.line === lineIndex
+    ? visibleToMarkdownOffset(parsed.content, selection.end.offset)
+    : start;
+
+  if (start > end) [start, end] = [end, start];
+
+  if (start === end) {
+    parsed.content = parsed.content.slice(0, start) + marker + marker + parsed.content.slice(end);
+    lines[lineIndex] = buildMarkdownLine(parsed.type, parsed.content, parsed.checked);
+    markdownSource = lines.join('\n');
+    renderMarkdown(false, { line: lineIndex, offset: markdownToVisibleOffset(parsed.content, start + marker.length) });
   } else {
-    markdownSource = markdownSource.slice(0, start) + marker + selected + marker + markdownSource.slice(end);
-    start += marker.length;
-    end += marker.length;
+    const selected = parsed.content.slice(start, end);
+    const before = parsed.content.slice(Math.max(0, start - marker.length), start);
+    const after = parsed.content.slice(end, end + marker.length);
+    if (before === marker && after === marker) {
+      parsed.content = parsed.content.slice(0, start - marker.length) + selected + parsed.content.slice(end + marker.length);
+      start -= marker.length;
+      end -= marker.length;
+    } else {
+      parsed.content = parsed.content.slice(0, start) + marker + selected + marker + parsed.content.slice(end);
+      start += marker.length;
+      end += marker.length;
+    }
+    lines[lineIndex] = buildMarkdownLine(parsed.type, parsed.content, parsed.checked);
+    markdownSource = lines.join('\n');
+    renderMarkdown(false, { line: lineIndex, offset: markdownToVisibleOffset(parsed.content, end) });
   }
 
-  renderMarkdown(false);
-  setSelectionOffsets(start, end);
   updateWindowTitle();
   scheduleAutoSave();
 }
 
+function selectedLineIndexes() {
+  const selection = getSelectionPositions();
+  const start = Math.min(selection.start.line, selection.end.line);
+  const end = Math.max(selection.start.line, selection.end.line);
+  const indexes = [];
+  for (let index = start; index <= end; index += 1) indexes.push(index);
+  return indexes;
+}
+
 function toggleLinePrefix(type) {
   markdownSource = readMarkdownFromEditor();
-  const { start, end } = getSelectionOffsets();
-  const lines = markdownSource.split('\n');
-  let cursor = 0;
-  const selectedIndexes = [];
-
-  lines.forEach((line, index) => {
-    const lineStart = cursor;
-    const lineEnd = cursor + line.length;
-    if (lineEnd >= start && lineStart <= end) selectedIndexes.push(index);
-    cursor = lineEnd + 1;
-  });
-
-  const indexes = selectedIndexes.length ? selectedIndexes : [0];
-  const allAlreadyPrefixed = indexes.every((index) => {
-    const line = lines[index] || "";
-    return type === 'task' ? /^\s*- \[[ xX]\]\s?/.test(line) : /^\s*-\s+/.test(line) && !/^\s*- \[[ xX]\]/.test(line);
-  });
+  const lines = getMarkdownLines();
+  const indexes = selectedLineIndexes();
+  const allAlreadyTyped = indexes.every((index) => parseMarkdownLine(lines[index] || '').type === type);
 
   indexes.forEach((index) => {
-    const line = lines[index] || "";
-    if (type === 'task') {
-      lines[index] = allAlreadyPrefixed
-        ? line.replace(/^(\s*)- \[[ xX]\]\s?/, '$1')
-        : line.replace(/^(\s*)-\s+/, '$1').replace(/^(\s*)/, '$1- [ ] ');
+    const parsed = parseMarkdownLine(lines[index] || '');
+    if (allAlreadyTyped) {
+      lines[index] = parsed.content;
+    } else if (type === 'task') {
+      lines[index] = buildMarkdownLine('task', parsed.content, false);
     } else {
-      lines[index] = allAlreadyPrefixed
-        ? line.replace(/^(\s*)-\s+/, '$1')
-        : line.replace(/^(\s*)- \[[ xX]\]\s?/, '$1').replace(/^(\s*)/, '$1- ');
+      lines[index] = buildMarkdownLine('list', parsed.content, false);
     }
   });
 
+  const caret = getCaretPosition();
   markdownSource = lines.join('\n');
-  renderMarkdown(false);
-  setCaretOffset(Math.min(start, markdownSource.length));
+  renderMarkdown(false, caret);
   updateWindowTitle();
   scheduleAutoSave();
 }
 
 function toggleTaskLine(lineIndex) {
-  const lines = markdownSource.split('\n');
-  const line = lines[lineIndex];
-  if (!line) return;
-  lines[lineIndex] = line.replace(/^(\s*)- \[([ xX])\]/, (_, indent, state) => `${indent}- [${state.toLowerCase() === 'x' ? ' ' : 'x'}]`);
-  setMarkdownSource(lines.join('\n'), false);
+  markdownSource = readMarkdownFromEditor();
+  const lines = getMarkdownLines();
+  const parsed = parseMarkdownLine(lines[lineIndex] || '');
+  if (parsed.type !== 'task') return;
+  lines[lineIndex] = buildMarkdownLine('task', parsed.content, !parsed.checked);
+  markdownSource = lines.join('\n');
+  renderMarkdown(false, { line: lineIndex, offset: 0 });
   scheduleAutoSave();
 }
 
+function splitCurrentLine() {
+  markdownSource = readMarkdownFromEditor();
+  const caret = getCaretPosition();
+  const lines = getMarkdownLines();
+  const parsed = parseMarkdownLine(lines[caret.line] || '');
+  const markdownOffset = visibleToMarkdownOffset(parsed.content, caret.offset);
+  const before = parsed.content.slice(0, markdownOffset);
+  const after = parsed.content.slice(markdownOffset);
+
+  if ((parsed.type === 'list' || parsed.type === 'task') && parsed.content.trim() === '') {
+    lines[caret.line] = '';
+    markdownSource = lines.join('\n');
+    renderMarkdown(false, { line: caret.line, offset: 0 });
+    updateWindowTitle();
+    scheduleAutoSave();
+    return;
+  }
+
+  lines[caret.line] = buildMarkdownLine(parsed.type, before, parsed.checked);
+  const nextType = parsed.type === 'task' ? 'task' : parsed.type === 'list' ? 'list' : 'paragraph';
+  lines.splice(caret.line + 1, 0, buildMarkdownLine(nextType, after, false));
+  markdownSource = lines.join('\n');
+  renderMarkdown(false, { line: caret.line + 1, offset: 0 });
+  updateWindowTitle();
+  scheduleAutoSave();
+}
+
+function handleBackspaceAtLineStart(event) {
+  const selection = getSelectionPositions();
+  if (!selection.collapsed) return false;
+
+  const caret = getCaretPosition();
+  if (caret.offset !== 0) return false;
+  markdownSource = readMarkdownFromEditor();
+  const lines = getMarkdownLines();
+  const parsed = parseMarkdownLine(lines[caret.line] || '');
+
+  if (parsed.type === 'list' || parsed.type === 'task') {
+    event.preventDefault();
+    lines[caret.line] = parsed.content;
+    markdownSource = lines.join('\n');
+    renderMarkdown(false, { line: caret.line, offset: 0 });
+    updateWindowTitle();
+    scheduleAutoSave();
+    return true;
+  }
+
+  if (caret.line > 0) {
+    event.preventDefault();
+    const previousParsed = parseMarkdownLine(lines[caret.line - 1] || '');
+    const previousVisibleLength = parseInlineMarkdown(previousParsed.content)
+      .reduce((length, fragment) => length + fragment.text.length, 0);
+    lines[caret.line - 1] = buildMarkdownLine(
+      previousParsed.type,
+      previousParsed.content + parsed.content,
+      previousParsed.checked
+    );
+    lines.splice(caret.line, 1);
+    markdownSource = lines.join('\n');
+    renderMarkdown(false, { line: caret.line - 1, offset: previousVisibleLength });
+    updateWindowTitle();
+    scheduleAutoSave();
+    return true;
+  }
+
+  return false;
+}
 async function createNewNoteWindow(offset = 20) {
   const position = await win.innerPosition();
   const size = await win.innerSize();
@@ -536,7 +777,7 @@ function updatePinButtonStyle() {
 function initializeMarkdownEditor() {
   if (!editor) return;
 
-  editor.contentEditable = "true";
+  editor.contentEditable = "false";
 
   editor.addEventListener('compositionstart', () => {
     isComposing = true;
@@ -544,17 +785,12 @@ function initializeMarkdownEditor() {
 
   editor.addEventListener('compositionend', () => {
     isComposing = false;
-    markdownSource = readMarkdownFromEditor();
-    renderMarkdown(true);
-    scheduleAutoSave();
+    syncEditorFromDom(true);
   });
 
   editor.addEventListener('input', () => {
     if (isRendering || isComposing) return;
-    markdownSource = readMarkdownFromEditor();
-    renderMarkdown(true);
-    updateWindowTitle();
-    scheduleAutoSave();
+    syncEditorFromDom(true);
   });
 
   editor.addEventListener('focus', () => {
@@ -566,22 +802,33 @@ function initializeMarkdownEditor() {
   });
 
   editor.addEventListener('click', (event) => {
-    const taskMarker = event.target.closest('.md-task-marker');
-    if (!taskMarker) return;
+    const taskToggle = event.target.closest('.task-toggle');
+    if (!taskToggle) return;
     event.preventDefault();
-    toggleTaskLine(Number(taskMarker.dataset.line));
+    toggleTaskLine(Number(taskToggle.dataset.line));
   });
 
   editor.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !isComposing) {
+      event.preventDefault();
+      splitCurrentLine();
+      return;
+    }
+
+    if (event.key === 'Backspace' && handleBackspaceAtLineStart(event)) {
+      return;
+    }
+
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'b') {
       event.preventDefault();
       toggleInlineFormat('**');
+      return;
     }
 
-    if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'x') {
-      event.preventDefault();
-      toggleInlineFormat('~~');
-    }
+  });
+
+  toolbar?.addEventListener('mousedown', (event) => {
+    if (event.target.closest('.toolbar-btn')) event.preventDefault();
   });
 
   toolbar?.addEventListener('click', (event) => {
@@ -591,7 +838,6 @@ function initializeMarkdownEditor() {
     editor.focus();
     const format = button.dataset.format;
     if (format === 'bold') toggleInlineFormat('**');
-    if (format === 'strike') toggleInlineFormat('~~');
     if (format === 'list') toggleLinePrefix('list');
     if (format === 'task') toggleLinePrefix('task');
   });
@@ -719,3 +965,4 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   } catch {}
 });
+
