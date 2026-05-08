@@ -19,9 +19,36 @@
       box-shadow: 0 12px 30px rgba(0,0,0,0.08);
       padding: 20px;
     }
-    h1 { font-size: 20px; margin: 0 0 16px; }
-    .row { margin: 14px 0; }
-    label { display: block; font-size: 13px; color: #6a6257; margin-bottom: 6px; }
+    h1 { font-size: 18px; margin: 0 0 18px; }
+    .setting-group {
+      border-top: 1px solid rgba(105, 92, 72, 0.08);
+      padding: 16px 0 0;
+      margin-top: 16px;
+    }
+    .setting-group:first-of-type {
+      border-top: none;
+      margin-top: 0;
+      padding-top: 0;
+    }
+    .setting-header {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-bottom: 4px;
+    }
+    .setting-title {
+      color: #4d463f;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .setting-desc {
+      color: #9b9287;
+      font-size: 12px;
+      line-height: 1.45;
+      margin: 0 0 12px;
+    }
+    .row { margin: 12px 0; }
+    label { display: block; font-size: 12px; color: #6a6257; margin-bottom: 6px; }
     input[type="time"], input[readonly], select {
       width: 100%;
       border: 1px solid #ddd5c7;
@@ -42,6 +69,14 @@
       gap: 10px;
       flex-wrap: wrap;
     }
+    .switch-row {
+      margin-top: 10px;
+    }
+    .schedule-grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: 1fr 1fr;
+    }
     .weekday-row label {
       display: inline-flex;
       align-items: center;
@@ -57,51 +92,66 @@
     }
     .primary { background: #333; color: #fff; }
     .secondary { background: #eee8dd; color: #4c463f; }
-    .status { min-height: 18px; color: #777; font-size: 12px; margin-top: 12px; }
+    .status { min-height: 18px; color: #777; font-size: 12px; margin-top: 14px; }
+    @media (max-width: 420px) {
+      .schedule-grid { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
   <div class="panel">
-    <h1>Scheduled Raise</h1>
+    <h1>Settings</h1>
 
-    <div class="row switch-row">
-      <input id="enabled" type="checkbox" />
-      <label for="enabled" style="margin:0;">Enable scheduled temporary raise</label>
-    </div>
+    <div class="setting-group">
+      <div class="setting-header">
+        <div class="setting-title">Scheduled raise</div>
+      </div>
+      <p class="setting-desc">Bring active notes to the front at a set time.</p>
 
-    <div class="row">
-      <label for="time">Time</label>
-      <input id="time" type="time" value="09:00" />
-    </div>
+      <div class="row switch-row">
+        <input id="enabled" type="checkbox" />
+        <label for="enabled" style="margin:0;">Enable scheduled raise</label>
+      </div>
 
-    <div class="row">
-      <label for="recurrence">Repeat</label>
-      <select id="recurrence">
-        <option value="daily">Daily</option>
-        <option value="weekly">Weekly</option>
-      </select>
-    </div>
+      <div class="schedule-grid">
+        <div class="row">
+          <label for="time">Time</label>
+          <input id="time" type="time" value="09:00" />
+        </div>
 
-    <div class="row" id="weekdays-row">
-      <label>Weekdays</label>
-      <div class="weekday-row">
-        <label><input type="checkbox" value="1" /> Mon</label>
-        <label><input type="checkbox" value="2" /> Tue</label>
-        <label><input type="checkbox" value="3" /> Wed</label>
-        <label><input type="checkbox" value="4" /> Thu</label>
-        <label><input type="checkbox" value="5" /> Fri</label>
-        <label><input type="checkbox" value="6" /> Sat</label>
-        <label><input type="checkbox" value="7" /> Sun</label>
+        <div class="row">
+          <label for="recurrence">Repeat</label>
+          <select id="recurrence">
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="row" id="weekdays-row">
+        <label>Weekdays</label>
+        <div class="weekday-row">
+          <label><input type="checkbox" value="1" /> Mon</label>
+          <label><input type="checkbox" value="2" /> Tue</label>
+          <label><input type="checkbox" value="3" /> Wed</label>
+          <label><input type="checkbox" value="4" /> Thu</label>
+          <label><input type="checkbox" value="5" /> Fri</label>
+          <label><input type="checkbox" value="6" /> Sat</label>
+          <label><input type="checkbox" value="7" /> Sun</label>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="primary" id="save">Save</button>
+        <button class="secondary" id="raise-now">Raise now</button>
       </div>
     </div>
 
-    <div class="actions">
-      <button class="primary" id="save">Save</button>
-      <button class="secondary" id="raise-now">Raise Now</button>
-    </div>
-
-    <div class="row">
-      <label for="save-dir">File save directory</label>
+    <div class="setting-group">
+      <div class="setting-header">
+        <label class="setting-title" for="save-dir">File save directory</label>
+      </div>
+      <p class="setting-desc">Notes are saved as local Markdown files here.</p>
       <input id="save-dir" type="text" readonly value="Loading..." />
     </div>
 

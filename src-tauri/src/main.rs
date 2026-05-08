@@ -8,7 +8,7 @@ use std::time::Duration as StdDuration;
 use chrono::{Datelike, DateTime, Duration, Local, Timelike, Utc};
 use dirs::data_dir;
 use serde::{Deserialize, Serialize};
-use tauri::{Manager, menu::{MenuBuilder, MenuItem}, tray::TrayIconBuilder};
+use tauri::{Emitter, Manager, menu::{MenuBuilder, MenuItem}, tray::TrayIconBuilder};
 use uuid::Uuid;
 
 // 获取AppData目录
@@ -199,8 +199,8 @@ fn save_schedule_settings_to_disk(settings: &ScheduleSettings) -> Result<(), Str
 
 fn window_title_from_preview(preview: Option<&String>) -> String {
     match preview.map(|value| value.trim()).filter(|value| !value.is_empty()) {
-        Some(preview) => format!("FadeNote - {}", preview.chars().take(40).collect::<String>()),
-        None => "FadeNote - New Note".to_string(),
+        Some(preview) => format!("{} · FadeNote", preview.chars().take(40).collect::<String>()),
+        None => "New Note · FadeNote".to_string(),
     }
 }
 
@@ -330,6 +330,84 @@ fn apply_expire_pass(index: &mut IndexFile, now: &DateTime<Local>) {
 }
 
 // Fix 5: 重建索引 - 不得重置生命周期
+fn expired_active_note_ids(index: &IndexFile, now: &DateTime<Local>) -> Vec<String> {
+    index.notes.iter()
+        .filter(|entry| entry.archived_at.is_none() && is_expired_check(entry, now))
+        .map(|entry| entry.id.clone())
+        .collect()
+}
+
+fn archive_expired_notes_by_id(index: &mut IndexFile, note_ids: &[String], now: &DateTime<Local>) {
+    for entry in index.notes.iter_mut() {
+        if note_ids.iter().any(|id| id == &entry.id) && entry.archived_at.is_none() {
+            if let Err(e) = archive_note(entry, now) {
+                eprintln!("Failed to archive note {}: {}", entry.id, e);
+                entry.archived_at = Some(now.to_rfc3339());
+                entry.expire_at = None;
+            }
+        }
+    }
+}
+
+fn read_index_or_rebuild(app_data_dir: &Path) -> Result<IndexFile, String> {
+    let index_path = app_data_dir.join("index.json");
+    if !index_path.exists() {
+        return rebuild_index(app_data_dir);
+    }
+
+    let content = fs::read_to_string(&index_path)
+        .map_err(|e| format!("read index failed: {}", e))?;
+    serde_json::from_str::<IndexFile>(&content)
+        .or_else(|_| rebuild_index(app_data_dir))
+}
+
+fn save_index(app_data_dir: &Path, index: &mut IndexFile) -> Result<(), String> {
+    for entry in &mut index.notes {
+        derive_status(entry);
+    }
+    let index_path = app_data_dir.join("index.json");
+    let json_content = serde_json::to_string_pretty(index)
+        .map_err(|e| format!("serialize index failed: {}", e))?;
+    fs::write(index_path, json_content)
+        .map_err(|e| format!("write index failed: {}", e))
+}
+
+async fn run_lifecycle_pass(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let app_data_dir = get_app_data_dir()?;
+    let mut index = read_index_or_rebuild(&app_data_dir)?;
+    let now = Local::now();
+    let expired_ids = expired_active_note_ids(&index, &now);
+
+    if expired_ids.is_empty() {
+        return Ok(());
+    }
+
+    for id in &expired_ids {
+        let label = format!("note-{}", id);
+        if app_handle.get_webview_window(&label).is_some() {
+            let _ = app_handle.emit_to(label.as_str(), "fadenote://archive-now", id.clone());
+        }
+    }
+
+    std::thread::sleep(StdDuration::from_millis(650));
+
+    index = read_index_or_rebuild(&app_data_dir)?;
+    let still_expired_ids: Vec<String> = expired_active_note_ids(&index, &Local::now())
+        .into_iter()
+        .filter(|id| expired_ids.iter().any(|expired_id| expired_id == id))
+        .collect();
+
+    for id in &still_expired_ids {
+        let label = format!("note-{}", id);
+        if let Some(window) = app_handle.get_webview_window(&label) {
+            let _ = window.hide();
+        }
+    }
+
+    archive_expired_notes_by_id(&mut index, &still_expired_ids, &Local::now());
+    save_index(&app_data_dir, &mut index)
+}
+
 fn rebuild_index(notes_dir: &Path) -> Result<IndexFile, String> {
     let index_path = notes_dir.join("index.json");
     
@@ -481,6 +559,13 @@ fn normalize_index(mut index: IndexFile) -> IndexFile {
         
         if entry.last_active_at.is_empty() {
             entry.last_active_at = get_current_iso8601_time();
+        }
+
+        if entry.archived_at.is_none() && !entry.pinned && entry.expire_at.is_none() {
+            let base_time = DateTime::parse_from_rfc3339(&entry.last_active_at)
+                .map(|time| time.with_timezone(&Local))
+                .unwrap_or_else(|_| Local::now());
+            entry.expire_at = Some((base_time + Duration::days(7)).to_rfc3339());
         }
         
         // 确保文件路径有效
@@ -1095,6 +1180,11 @@ async fn set_note_pinned(window: tauri::WebviewWindow, id: String, pinned: bool)
     // 查找并更新指定ID的便签
     if let Some(entry) = index.notes.iter_mut().find(|note| note.id == id) {
         entry.pinned = pinned;
+        if !pinned && entry.archived_at.is_none() {
+            let now = Local::now();
+            entry.last_active_at = now.to_rfc3339();
+            entry.expire_at = Some((now + Duration::days(7)).to_rfc3339());
+        }
         
         // 保存更新后的索引
         index.app.name = "FadeNote".to_string(); // 确保app信息存在
@@ -1277,6 +1367,53 @@ async fn save_note_content(window: tauri::WebviewWindow, id: String, content: St
 }
 
 // 提取内容预览：从内容中提取第一行作为预览
+#[tauri::command]
+async fn save_note_content_without_touch(window: tauri::WebviewWindow, id: String, content: String) -> Result<(), String> {
+    let notes_dir = PathBuf::from(ensure_notes_directory(window).await?);
+    let index_path = notes_dir.join("index.json");
+    if !index_path.exists() {
+        return Err("index not found".to_string());
+    }
+
+    let mut index: IndexFile = {
+        let content_str = fs::read_to_string(&index_path)
+            .map_err(|e| format!("read index failed: {}", e))?;
+        serde_json::from_str(&content_str)
+            .map_err(|e| format!("parse index failed: {}", e))?
+    };
+
+    if let Some(update_entry) = index.notes.iter_mut().find(|note| note.id == id) {
+        if !is_active(update_entry) {
+            return Ok(());
+        }
+
+        let file_path = notes_dir.join(&update_entry.file.relative_path);
+        if !file_path.exists() {
+            return Err("note file not found".to_string());
+        }
+
+        let existing_content = fs::read_to_string(&file_path).unwrap_or_default();
+        let existing_id = parse_id_from_content(&existing_content)
+            .unwrap_or_else(|| update_entry.id.clone());
+        let created_at = extract_created_at_from_content(&existing_content)
+            .unwrap_or_else(|| update_entry.created_at.clone());
+        let full_content = build_full_content(&existing_id, &created_at, &content);
+
+        fs::write(&file_path, full_content)
+            .map_err(|e| format!("write note failed: {}", e))?;
+        update_entry.cached_preview = extract_first_line_preview(&content);
+
+        let json_content = serde_json::to_string_pretty(&index)
+            .map_err(|e| format!("serialize index failed: {}", e))?;
+        fs::write(&index_path, json_content)
+            .map_err(|e| format!("write index failed: {}", e))?;
+
+        Ok(())
+    } else {
+        Err("note not found".to_string())
+    }
+}
+
 fn extract_first_line_preview(content: &str) -> Option<String> {
     let lines: Vec<&str> = content.lines().collect();
     
@@ -1640,6 +1777,7 @@ fn main() {
             load_note,
             update_note_activity,
             save_note_content,
+            save_note_content_without_touch,
             update_note_window,
             restore_note,
             set_note_pinned,
@@ -1865,6 +2003,16 @@ fn main() {
             });
             
             // 初始化AppData目录
+            let lifecycle_app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    if let Err(e) = run_lifecycle_pass(lifecycle_app_handle.clone()).await {
+                        eprintln!("lifecycle pass failed: {}", e);
+                    }
+                    std::thread::sleep(StdDuration::from_secs(60));
+                }
+            });
+
             tauri::async_runtime::block_on(async {
                 // 获取应用数据目录
                 let app_data_dir = get_app_data_dir().unwrap();
@@ -1922,7 +2070,7 @@ fn main() {
                                     let window_info = note.window.as_ref().unwrap();
                                     // 创建对应窗口
                                     let label = format!("note-{}", note.id);
-                                    let title = "FadeNote";
+                                    let title = "New Note · FadeNote";
                                     
                                     match create_note_window(
                                         app.app_handle().clone(),
@@ -2006,7 +2154,7 @@ fn main() {
                             
                             // 创建欢迎便签窗口
                             let label = format!("note-{}", welcome_id);
-                            let title = "FadeNote";
+                            let title = "New Note · FadeNote";
                             
                             match create_note_window(
                                 app.app_handle().clone(),
@@ -2113,7 +2261,7 @@ fn main() {
                             
                             // 创建对应的窗口
                             let label = format!("note-{}", id);
-                            let title = "FadeNote";
+                            let title = "New Note · FadeNote";
                             
                             match create_note_window(
                                 app.app_handle().clone(),

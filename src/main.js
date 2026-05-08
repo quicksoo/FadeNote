@@ -101,7 +101,7 @@ function plainTitleFromMarkdown(markdown) {
     .map((line) => line.trim())
     .find(Boolean);
 
-  if (!firstLine) return "FadeNote - New Note";
+  if (!firstLine) return "New Note · FadeNote";
 
   const text = firstLine
     .replace(/^[-*]\s+\[[ xX]\]\s+/, '')
@@ -110,7 +110,7 @@ function plainTitleFromMarkdown(markdown) {
     .trim()
     .slice(0, 40);
 
-  return `FadeNote - ${text || 'New Note'}`;
+  return `${text || 'New Note'} · FadeNote`;
 }
 
 function setSaveStatus(status, label) {
@@ -120,9 +120,9 @@ function setSaveStatus(status, label) {
 }
 
 function formatRemainingTime(expireAt) {
-  if (!expireAt) return "Auto archive";
+  if (!expireAt) return "Archive date pending";
   const remainingMs = new Date(expireAt).getTime() - Date.now();
-  if (!Number.isFinite(remainingMs)) return "Auto archive";
+  if (!Number.isFinite(remainingMs)) return "Archive date pending";
   if (remainingMs <= 0) return "Archiving soon";
 
   const hours = Math.ceil(remainingMs / (1000 * 60 * 60));
@@ -661,7 +661,7 @@ async function createNewNoteWindow(offset = 20) {
 
   await window.__TAURI__.core.invoke('create_note_window', {
     label: `note-${newNoteId}`,
-    title: "FadeNote - New Note",
+    title: "New Note · FadeNote",
     width: size.width,
     height: size.height,
     x: Math.round(position.x + offset),
@@ -858,6 +858,38 @@ function initializeNewNoteGesture() {
   });
 }
 
+function initializeLifecycleEvents() {
+  win.listen('fadenote://archive-now', async () => {
+    if (!noteId) return;
+    try {
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+      markdownSource = readMarkdownFromEditor();
+      await window.__TAURI__.core.invoke('save_note_content_without_touch', {
+        id: noteId,
+        content: markdownSource
+      });
+    } catch (err) {
+      console.warn('Failed to save before archive:', err);
+    }
+
+    try {
+      await win.destroy();
+    } catch (destroyErr) {
+      console.warn('Failed to destroy archived window, falling back to hide:', destroyErr);
+      try {
+        await win.hide();
+      } catch (hideErr) {
+        console.warn('Failed to hide archived window:', hideErr);
+      }
+    }
+  }).catch((err) => {
+    console.warn('Failed to listen for lifecycle events:', err);
+  });
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   if (hasInitialized) return;
   hasInitialized = true;
@@ -865,6 +897,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initializeButtonEvents();
   initializeMarkdownEditor();
   initializeNewNoteGesture();
+  initializeLifecycleEvents();
 
   try {
     const currentDir = await window.__TAURI__.core.invoke('ensure_notes_directory');
