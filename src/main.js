@@ -73,11 +73,13 @@ let noteIdSet = false;
 let hasInitialized = false;
 let saveTimer = null;
 let idleTimer = null;
+let windowStateTimer = null;
 let isPinned = false;
 let markdownSource = "";
 let isRendering = false;
 let isComposing = false;
 let currentNoteDetail = null;
+let isClosingWindow = false;
 
 const urlParams = new URLSearchParams(window.location.search);
 const urlNoteId = urlParams.get('noteId');
@@ -465,7 +467,7 @@ function scheduleAutoSave() {
   if (saveTimer) clearTimeout(saveTimer);
 }
 
-async function saveCurrentNoteContent() {
+async function saveCurrentNoteContent({ touchActivity = true } = {}) {
   if (!noteId || !editor) return;
 
   if (idleTimer) {
@@ -475,12 +477,77 @@ async function saveCurrentNoteContent() {
 
   markdownSource = readMarkdownFromEditor();
   setSaveStatus('saving', 'Saving...');
-  await window.__TAURI__.core.invoke('save_note_content', {
+  await window.__TAURI__.core.invoke(touchActivity ? 'save_note_content' : 'save_note_content_without_touch', {
     id: noteId,
     content: markdownSource
   });
-  await updateWindowTitle();
+  if (touchActivity) await updateWindowTitle();
   setSaveStatus('saved', 'Saved');
+}
+
+async function closeAfterSaving({ touchActivity = true, destroy = false } = {}) {
+  if (isClosingWindow) return;
+  isClosingWindow = true;
+  if (windowStateTimer) {
+    clearTimeout(windowStateTimer);
+    windowStateTimer = null;
+  }
+
+  try {
+    await saveCurrentNoteContent({ touchActivity });
+  } catch (err) {
+    console.error('Failed to save note before close:', err);
+    setSaveStatus('error', 'Save failed');
+  }
+
+  try {
+    await saveWindowState();
+  } catch (err) {
+    console.warn('Failed to save window state before close:', err);
+  }
+
+  try {
+    if (destroy) {
+      await win.destroy();
+    } else {
+      await win.close();
+    }
+  } catch (closeErr) {
+    console.warn('Failed to close window, falling back to destroy:', closeErr);
+    try {
+      await win.destroy();
+    } catch (destroyErr) {
+      console.warn('Failed to destroy window:', destroyErr);
+      isClosingWindow = false;
+    }
+  }
+}
+
+async function saveWindowState() {
+  if (!noteId) return;
+  const position = await win.innerPosition();
+  const size = await win.innerSize();
+  await window.__TAURI__.core.invoke('update_note_window', {
+    id: noteId,
+    x: position.x,
+    y: position.y,
+    width: size.width,
+    height: size.height
+  });
+}
+
+function scheduleWindowStateSave() {
+  if (!noteId || isClosingWindow) return;
+  if (windowStateTimer) clearTimeout(windowStateTimer);
+
+  windowStateTimer = setTimeout(async () => {
+    windowStateTimer = null;
+    try {
+      await saveWindowState();
+    } catch (err) {
+      console.error('Failed to update note window info:', err);
+    }
+  }, 500);
 }
 
 function syncEditorFromDom(preserveCaret = true) {
@@ -671,13 +738,7 @@ async function createNewNoteWindow(offset = 20) {
 
 function initializeButtonEvents() {
   document.getElementById("btn-close").addEventListener('click', async () => {
-    try {
-      await saveCurrentNoteContent();
-    } catch (err) {
-      console.error('Failed to save note before close:', err);
-      setSaveStatus('error', 'Save failed');
-    }
-    win.close();
+    await closeAfterSaving();
   });
 
   document.getElementById("btn-delete").addEventListener('click', async () => {
@@ -861,32 +922,17 @@ function initializeNewNoteGesture() {
 function initializeLifecycleEvents() {
   win.listen('fadenote://archive-now', async () => {
     if (!noteId) return;
-    try {
-      if (idleTimer) {
-        clearTimeout(idleTimer);
-        idleTimer = null;
-      }
-      markdownSource = readMarkdownFromEditor();
-      await window.__TAURI__.core.invoke('save_note_content_without_touch', {
-        id: noteId,
-        content: markdownSource
-      });
-    } catch (err) {
-      console.warn('Failed to save before archive:', err);
-    }
-
-    try {
-      await win.destroy();
-    } catch (destroyErr) {
-      console.warn('Failed to destroy archived window, falling back to hide:', destroyErr);
-      try {
-        await win.hide();
-      } catch (hideErr) {
-        console.warn('Failed to hide archived window:', hideErr);
-      }
-    }
+    await closeAfterSaving({ touchActivity: false, destroy: true });
   }).catch((err) => {
     console.warn('Failed to listen for lifecycle events:', err);
+  });
+
+  win.onCloseRequested(async (event) => {
+    if (isClosingWindow) return;
+    event.preventDefault();
+    await closeAfterSaving();
+  }).catch((err) => {
+    console.warn('Failed to listen for close request:', err);
   });
 }
 
@@ -958,35 +1004,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     setSaveStatus('error', 'Load failed');
   }
 
-  window.addEventListener('beforeunload', async () => {
+  window.addEventListener('beforeunload', () => {
     try {
-      await saveCurrentNoteContent();
+      if (noteId && editor) {
+        markdownSource = readMarkdownFromEditor();
+      }
     } catch (err) {
-      console.error('Failed to save note content:', err);
-      setSaveStatus('error', 'Save failed');
+      console.error('Failed to read note content before unload:', err);
     }
   });
 
-  let positionUpdateTimer = null;
-  document.addEventListener('mouseup', async () => {
-    if (positionUpdateTimer) clearTimeout(positionUpdateTimer);
+  document.addEventListener('mouseup', scheduleWindowStateSave);
 
-    positionUpdateTimer = setTimeout(async () => {
-      if (!noteId) return;
-      try {
-        const position = await win.innerPosition();
-        const size = await win.innerSize();
-        await window.__TAURI__.core.invoke('update_note_window', {
-          id: noteId,
-          x: position.x,
-          y: position.y,
-          width: size.width,
-          height: size.height
-        });
-      } catch (err) {
-        console.error('Failed to update note window info:', err);
-      }
-    }, 500);
+  win.onMoved(scheduleWindowStateSave).catch((err) => {
+    console.warn('Failed to listen for window move:', err);
+  });
+
+  win.onResized(scheduleWindowStateSave).catch((err) => {
+    console.warn('Failed to listen for window resize:', err);
   });
 
   try {

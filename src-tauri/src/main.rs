@@ -6,17 +6,19 @@ use std::sync::Mutex;
 use std::time::Duration as StdDuration;
 
 use chrono::{Datelike, DateTime, Duration, Local, Timelike, Utc};
-use dirs::data_dir;
-use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, menu::{MenuBuilder, MenuItem}, tray::TrayIconBuilder};
 use uuid::Uuid;
 
-// 获取AppData目录
-fn get_app_data_dir() -> Result<PathBuf, String> {
-    let mut app_data_dir = data_dir().ok_or("无法获取AppData目录")?;
-    app_data_dir.push("FadeNote");
-    Ok(app_data_dir)
-}
+mod models;
+mod note_content;
+mod storage;
+
+use models::{AppInfo, FileInfo, IndexFile, NoteEntry, ScheduleSettings, WindowInfo};
+use note_content::{
+    build_full_content, extract_content_only, extract_created_at_from_content,
+    extract_first_line_preview, parse_id_from_content,
+};
+use storage::{get_app_data_dir, write_file_safely};
 
 // 检查是否为首次启动
 // 条件：index.json不存在或为空，且notes目录下没有任何md文件
@@ -95,77 +97,6 @@ fn get_welcome_content() -> String {
 }
 
 // V2规范的数据模型
-#[derive(Serialize, Deserialize, Clone)]
-struct AppInfo {
-    name: String,
-    #[serde(rename = "createdAt")]
-    created_at: String,
-    #[serde(rename = "rebuildAt")]
-    rebuild_at: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-struct WindowInfo {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-struct FileInfo {
-    #[serde(rename = "relativePath")]
-    relative_path: String,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-struct NoteEntry {
-    id: String,
-    #[serde(rename = "createdAt")]
-    created_at: String,
-    #[serde(rename = "lastActiveAt")]
-    last_active_at: String,
-    #[serde(rename = "expireAt")]
-    expire_at: Option<String>,
-    #[serde(rename = "cachedPreview")]
-    cached_preview: Option<String>,
-    status: String,
-    #[serde(rename = "archivedAt")]
-    archived_at: Option<String>,
-    window: Option<WindowInfo>,
-    pinned: bool,  // 是否固定，固定便签不会过期
-    file: FileInfo,
-}
-
-#[derive(Serialize, Deserialize)]
-struct IndexFile {
-    version: u32,
-    app: AppInfo,
-    notes: Vec<NoteEntry>,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-struct ScheduleSettings {
-    enabled: bool,
-    time: String,
-    recurrence: String,
-    weekdays: Vec<u32>,
-    #[serde(rename = "lastTriggeredKey")]
-    last_triggered_key: Option<String>,
-}
-
-impl Default for ScheduleSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            time: "09:00".to_string(),
-            recurrence: "daily".to_string(),
-            weekdays: vec![1, 2, 3, 4, 5],
-            last_triggered_key: None,
-        }
-    }
-}
-
 // 应用状态
 struct AppState {
     notes_directory: Mutex<Option<PathBuf>>,
@@ -174,6 +105,24 @@ struct AppState {
 // 获取当前ISO 8601时间戳
 fn get_current_iso8601_time() -> String {
     Local::now().to_rfc3339()
+}
+
+fn new_empty_index() -> IndexFile {
+    IndexFile {
+        version: 2,
+        app: AppInfo {
+            name: "FadeNote".to_string(),
+            created_at: get_current_iso8601_time(),
+            rebuild_at: None,
+        },
+        notes: Vec::new(),
+    }
+}
+
+fn expire_at_7_days_from_iso(created_at: &str) -> Result<String, String> {
+    let created_time = DateTime::parse_from_rfc3339(created_at)
+        .map_err(|e| format!("解析时间失败: {}", e))?;
+    Ok((created_time.with_timezone(&Local) + Duration::days(7)).to_rfc3339())
 }
 
 fn load_schedule_settings_from_disk() -> ScheduleSettings {
@@ -193,7 +142,7 @@ fn save_schedule_settings_to_disk(settings: &ScheduleSettings) -> Result<(), Str
     fs::create_dir_all(&app_data_dir).map_err(|e| format!("create settings directory failed: {}", e))?;
     let content = serde_json::to_string_pretty(settings)
         .map_err(|e| format!("serialize settings failed: {}", e))?;
-    fs::write(app_data_dir.join("settings.json"), content)
+    write_file_safely(app_data_dir.join("settings.json"), content)
         .map_err(|e| format!("write settings failed: {}", e))
 }
 
@@ -267,10 +216,6 @@ async fn raise_active_notes_once_impl(app_handle: tauri::AppHandle) -> Result<()
 
 // Fix 1: 引入「Domain Query 层」（纯判断）
 // 判断便签是否已归档
-fn is_archived(entry: &NoteEntry) -> bool {
-    entry.archived_at.is_some()
-}
-
 // 判断便签是否过期
 fn is_expired_check(entry: &NoteEntry, now: &DateTime<Local>) -> bool {
     // 如果便签被固定，则永远不会过期
@@ -368,7 +313,7 @@ fn save_index(app_data_dir: &Path, index: &mut IndexFile) -> Result<(), String> 
     let index_path = app_data_dir.join("index.json");
     let json_content = serde_json::to_string_pretty(index)
         .map_err(|e| format!("serialize index failed: {}", e))?;
-    fs::write(index_path, json_content)
+    write_file_safely(index_path, json_content)
         .map_err(|e| format!("write index failed: {}", e))
 }
 
@@ -460,7 +405,7 @@ fn rebuild_index(notes_dir: &Path) -> Result<IndexFile, String> {
     // 保存重建后的索引
     let json_content = serde_json::to_string_pretty(&index)
         .map_err(|e| format!("序列化索引失败: {}", e))?;
-    fs::write(&index_path, json_content)
+    write_file_safely(&index_path, json_content)
         .map_err(|e| format!("写入索引文件失败: {}", e))?;
 
     Ok(index)
@@ -502,7 +447,7 @@ fn scan_directory_for_notes_rebuild_recursive(notes_dir: &Path, index: &mut Inde
                         )
                     };
                     
-                    let mut new_entry = NoteEntry {
+                    let new_entry = NoteEntry {
                         id: parsed_id.clone(),
                         created_at,
                         last_active_at,
@@ -635,7 +580,7 @@ fn validate_and_fix_index(notes_dir: &Path) -> Result<IndexFile, String> {
     // 保存更新后的索引
     let json_content = serde_json::to_string_pretty(&index)
         .map_err(|e| format!("序列化索引失败: {}", e))?;
-    fs::write(&index_path, json_content)
+    write_file_safely(&index_path, json_content)
         .map_err(|e| format!("写入索引文件失败: {}", e))?;
 
     Ok(index)
@@ -694,7 +639,7 @@ fn scan_directory_for_notes_recursive_with_existing(
                             (None, None)
                         };
                         
-                        let mut new_entry = NoteEntry {
+                        let new_entry = NoteEntry {
                             id: parsed_id.clone(), // 修复：clone值以避免移动
                             created_at: created_time.to_rfc3339(),
                             last_active_at: created_time.to_rfc3339(),
@@ -736,96 +681,6 @@ fn scan_directory_for_notes(notes_dir: &Path, index: &mut IndexFile, scan_path: 
     let mut existing_ids = current_index_ids.clone();
 
     scan_directory_for_notes_recursive(notes_dir, index, scan_path, &mut existing_ids)
-}
-
-// 从文件内容解析ID
-fn parse_id_from_content(content: &str) -> Option<String> {
-    // 查找Front Matter中的id
-    let lines: Vec<&str> = content.lines().collect();
-    let mut in_front_matter = false;
-    
-    for line in &lines {
-        if line.trim() == "---" {
-            if !in_front_matter {
-                in_front_matter = true;
-            } else {
-                break; // 结束front matter
-            }
-        } else if in_front_matter {
-            if line.starts_with("id:") {
-                let parts: Vec<&str> = line.splitn(2, ':').collect();
-                if parts.len() == 2 {
-                    return Some(parts[1].trim().to_string());
-                }
-            }
-        }
-    }
-    
-    None
-}
-
-// 提取纯文本内容（去除Front Matter）
-fn extract_content_only(content: &str) -> String {
-    let lines: Vec<&str> = content.lines().collect();
-    
-    let mut content_start = 0;
-    
-    // 循环处理可能存在的多个Front Matter块
-    while content_start < lines.len() {
-        // 寻找Front Matter的开始（---）
-        if let Some(start_idx) = lines[content_start..].iter().position(|line| line.trim() == "---") {
-            let actual_start_idx = content_start + start_idx;
-            
-            // 从开始位置之后寻找Front Matter的结束（下一个 ---）
-            if let Some(end_idx) = lines[actual_start_idx + 1..].iter().position(|line| line.trim() == "---") {
-                let actual_end_idx = actual_start_idx + 1 + end_idx;
-                
-                // 检查这个 --- 块之间是否包含标准的id和createdAt字段
-                let mut found_id = false;
-                let mut found_created_at = false;
-                
-                for i in actual_start_idx + 1..actual_end_idx {
-                    let line = lines[i].trim();
-                    if line.starts_with("id:") {
-                        found_id = true;
-                    } else if line.starts_with("createdAt:") {
-                        found_created_at = true;
-                    }
-                }
-                
-                // 只有当找到标准的id和createdAt字段时，才认为这是Front Matter
-                if found_id && found_created_at {
-                    // 跳过这个Front Matter块和紧接着的空行（如果有的话）
-                    content_start = if actual_end_idx + 1 < lines.len() && lines[actual_end_idx + 1].is_empty() {
-                        actual_end_idx + 2
-                    } else {
-                        actual_end_idx + 1
-                    };
-                    
-                    // 继续循环，检查是否还有更多的Front Matter
-                    continue;
-                }
-            }
-        }
-        
-        // 如果没有找到更多有效的Front Matter，返回剩余内容
-        break;
-    }
-    
-    // 返回从content_start开始的剩余内容
-    if content_start < lines.len() {
-        lines[content_start..].join("\n")
-    } else {
-        String::new() // 如果content_start超出了lines范围，返回空字符串
-    }
-}
-
-// 构建带Front Matter的完整内容
-fn build_full_content(id: &str, created_at: &str, content: &str) -> String {
-    format!(
-        "---\nid: {}\ncreatedAt: {}\n---\n{}",
-        id, created_at, content
-    )
 }
 
 // 初始化便签目录结构
@@ -989,11 +844,7 @@ async fn create_note(window: tauri::WebviewWindow, x: f64, y: f64, width: f64, h
     
     // 创建时间信息
     let created_at = get_current_iso8601_time();
-    let expires_at = (DateTime::parse_from_rfc3339(&created_at)
-        .map_err(|e| format!("解析时间失败: {}", e))?
-        .naive_utc()
-        .and_local_timezone(Utc)
-        .unwrap() + Duration::days(7)).to_rfc3339();
+    let expires_at = expire_at_7_days_from_iso(&created_at)?;
     
     // 创建文件内容
     let content = build_full_content(&id, &created_at, "");
@@ -1005,7 +856,7 @@ async fn create_note(window: tauri::WebviewWindow, x: f64, y: f64, width: f64, h
 
     // 创建文件
     let file_path = dated_dir.join(format!("{}.md", id));
-    fs::write(&file_path, content).map_err(|e| format!("创建便签文件失败: {}", e))?;
+    write_file_safely(&file_path, content).map_err(|e| format!("创建便签文件失败: {}", e))?;
 
     // 更新索引
     let index_path = notes_dir.join("index.json");
@@ -1015,15 +866,7 @@ async fn create_note(window: tauri::WebviewWindow, x: f64, y: f64, width: f64, h
         serde_json::from_str(&content)
             .map_err(|e| format!("解析索引文件失败: {}", e))?
     } else {
-        IndexFile {
-            version: 2,
-            app: AppInfo {
-                name: "FadeNote".to_string(),
-                created_at: get_current_iso8601_time(),
-                rebuild_at: None,
-            },
-            notes: Vec::new(),
-        }
+        new_empty_index()
     };
 
     let rel_path = file_path.strip_prefix(&notes_dir)
@@ -1058,8 +901,8 @@ async fn create_note(window: tauri::WebviewWindow, x: f64, y: f64, width: f64, h
 
     let json_content = serde_json::to_string_pretty(&index)
         .map_err(|e| format!("序列化索引失败: {}", e))?;
-    std::fs::write(&index_path, json_content)
-        .map_err(|e| format!("写入索引文件失败: {}", e))?;
+        write_file_safely(&index_path, json_content)
+            .map_err(|e| format!("写入索引文件失败: {}", e))?;
 
     Ok(id)
 }
@@ -1142,7 +985,7 @@ async fn update_note_activity(window: tauri::WebviewWindow, id: String) -> Resul
         // 不修改rebuildAt字段（V2规范：普通启动/更新禁止写入rebuildAt）
         let json_content = serde_json::to_string_pretty(&index)
             .map_err(|e| format!("序列化索引失败: {}", e))?;
-        fs::write(&index_path, json_content)
+        write_file_safely(&index_path, json_content)
             .map_err(|e| format!("写入索引文件失败: {}", e))?;
 
         Ok(())
@@ -1191,7 +1034,7 @@ async fn set_note_pinned(window: tauri::WebviewWindow, id: String, pinned: bool)
         // 不修改rebuildAt字段（V2规范：普通启动/更新禁止写入rebuildAt）
         let json_content = serde_json::to_string_pretty(&index)
             .map_err(|e| format!("序列化索引失败: {}", e))?;
-        fs::write(&index_path, json_content)
+        write_file_safely(&index_path, json_content)
             .map_err(|e| format!("写入索引文件失败: {}", e))?;
 
         Ok(())
@@ -1237,7 +1080,7 @@ async fn delete_note(window: tauri::WebviewWindow, id: String) -> Result<(), Str
         // 不修改rebuildAt字段（V2规范：普通启动/更新禁止写入rebuildAt）
         let json_content = serde_json::to_string_pretty(&index)
             .map_err(|e| format!("序列化索引失败: {}", e))?;
-        fs::write(&index_path, json_content)
+        write_file_safely(&index_path, json_content)
             .map_err(|e| format!("写入索引文件失败: {}", e))?;
 
         Ok(())
@@ -1276,7 +1119,7 @@ async fn restore_note(window: tauri::WebviewWindow, id: String) -> Result<(), St
         // 不修改rebuildAt字段（V2规范：普通启动/更新禁止写入rebuildAt）
         let json_content = serde_json::to_string_pretty(&index)
             .map_err(|e| format!("序列化索引失败: {}", e))?;
-        fs::write(&index_path, json_content)
+        write_file_safely(&index_path, json_content)
             .map_err(|e| format!("写入索引文件失败: {}", e))?;
 
         Ok(())
@@ -1336,7 +1179,7 @@ async fn save_note_content(window: tauri::WebviewWindow, id: String, content: St
         let full_content = build_full_content(&existing_id, &created_at, &content);
 
         // 写入文件
-        fs::write(&file_path, full_content)
+        write_file_safely(&file_path, full_content)
             .map_err(|e| format!("写入便签文件失败: {}", e))?;
 
         // 更新活动时间
@@ -1357,7 +1200,7 @@ async fn save_note_content(window: tauri::WebviewWindow, id: String, content: St
         // 保存更新后的索引
         let json_content = serde_json::to_string_pretty(&index)
             .map_err(|e| format!("序列化索引失败: {}", e))?;
-        fs::write(&index_path, json_content)
+        write_file_safely(&index_path, json_content)
             .map_err(|e| format!("写入索引文件失败: {}", e))?;
 
         Ok(())
@@ -1399,60 +1242,19 @@ async fn save_note_content_without_touch(window: tauri::WebviewWindow, id: Strin
             .unwrap_or_else(|| update_entry.created_at.clone());
         let full_content = build_full_content(&existing_id, &created_at, &content);
 
-        fs::write(&file_path, full_content)
+        write_file_safely(&file_path, full_content)
             .map_err(|e| format!("write note failed: {}", e))?;
         update_entry.cached_preview = extract_first_line_preview(&content);
 
         let json_content = serde_json::to_string_pretty(&index)
             .map_err(|e| format!("serialize index failed: {}", e))?;
-        fs::write(&index_path, json_content)
+        write_file_safely(&index_path, json_content)
             .map_err(|e| format!("write index failed: {}", e))?;
 
         Ok(())
     } else {
         Err("note not found".to_string())
     }
-}
-
-fn extract_first_line_preview(content: &str) -> Option<String> {
-    let lines: Vec<&str> = content.lines().collect();
-    
-    // 跳过空行，找到第一个非空行
-    for line in lines {
-        let trimmed = line.trim();
-        if !trimmed.is_empty() {
-            // 限制预览长度为50个字符
-            return Some(trimmed.chars().take(50).collect());
-        }
-    }
-    
-    // 如果没有找到非空行，返回None
-    None
-}
-
-// 从内容中提取创建时间
-fn extract_created_at_from_content(content: &str) -> Option<String> {
-    let lines: Vec<&str> = content.lines().collect();
-    let mut in_front_matter = false;
-    
-    for line in &lines {
-        if line.trim() == "---" {
-            if !in_front_matter {
-                in_front_matter = true;
-            } else {
-                break; // 结束front matter
-            }
-        } else if in_front_matter {
-            if line.starts_with("createdAt:") {
-                let parts: Vec<&str> = line.splitn(2, ':').collect();
-                if parts.len() == 2 {
-                    return Some(parts[1].trim().to_string());
-                }
-            }
-        }
-    }
-    
-    None
 }
 
 // 更新窗口位置和大小
@@ -1492,7 +1294,7 @@ async fn update_note_window(window: tauri::WebviewWindow, id: String, x: f64, y:
         // 保存更新后的索引
         let json_content = serde_json::to_string_pretty(&index)
             .map_err(|e| format!("序列化索引失败: {}", e))?;
-        fs::write(&index_path, json_content)
+        write_file_safely(&index_path, json_content)
             .map_err(|e| format!("写入索引文件失败: {}", e))?;
 
         Ok(())
@@ -1617,11 +1419,7 @@ pub async fn create_note_by_path(notes_dir: std::path::PathBuf, x: f64, y: f64, 
     
     // 创建时间信息
     let created_at = get_current_iso8601_time();
-    let expires_at = (chrono::DateTime::parse_from_rfc3339(&created_at)
-        .map_err(|e| format!("解析时间失败: {}", e))?
-        .naive_local()
-        .and_local_timezone(chrono::Local)
-        .unwrap() + chrono::Duration::days(7)).to_rfc3339();
+    let expires_at = expire_at_7_days_from_iso(&created_at)?;
     
     // 创建文件内容
     let content = build_full_content(&id, &created_at, "");
@@ -1633,7 +1431,7 @@ pub async fn create_note_by_path(notes_dir: std::path::PathBuf, x: f64, y: f64, 
 
     // 创建文件
     let file_path = dated_dir.join(format!("{}.md", id));
-    std::fs::write(&file_path, content).map_err(|e| format!("创建便签文件失败: {}", e))?;
+    write_file_safely(&file_path, content).map_err(|e| format!("创建便签文件失败: {}", e))?;
 
     // 更新索引
     let index_path = notes_dir.join("index.json");
@@ -1643,15 +1441,7 @@ pub async fn create_note_by_path(notes_dir: std::path::PathBuf, x: f64, y: f64, 
         serde_json::from_str(&content)
             .map_err(|e| format!("解析索引文件失败: {}", e))?
     } else {
-        IndexFile {
-            version: 2,
-            app: AppInfo {
-                name: "FadeNote".to_string(),
-                created_at: get_current_iso8601_time(),
-                rebuild_at: None,
-            },
-            notes: Vec::new(),
-        }
+        new_empty_index()
     };
 
     let rel_path = file_path.strip_prefix(&notes_dir)
@@ -1686,7 +1476,7 @@ pub async fn create_note_by_path(notes_dir: std::path::PathBuf, x: f64, y: f64, 
 
     let json_content = serde_json::to_string_pretty(&index)
         .map_err(|e| format!("序列化索引失败: {}", e))?;
-    std::fs::write(&index_path, json_content)
+    write_file_safely(&index_path, json_content)
         .map_err(|e| format!("写入索引文件失败: {}", e))?;
 
     Ok(id)
@@ -1735,7 +1525,7 @@ async fn update_note_window_info(
     // 保存更新后的索引
     let json_content = serde_json::to_string_pretty(&index)
         .map_err(|e| format!("序列化索引失败: {}", e))?;
-    fs::write(&index_path, json_content)
+    write_file_safely(&index_path, json_content)
         .map_err(|e| format!("写入索引文件失败: {}", e))?;
     
     Ok(())
@@ -1790,9 +1580,6 @@ fn main() {
             raise_active_notes_once
         ])
         .setup(|app| {
-            // 为应用设置防止退出行为
-            let app_handle = app.handle().clone();
-            
             // 创建系统托盘菜单项
             let new_note_item = MenuItem::with_id(app, "new_note", "New Note", true, None::<&str>).unwrap();
             let show_notes_item = MenuItem::with_id(app, "show_notes", "Show Notes", true, None::<&str>).unwrap();
@@ -1863,17 +1650,7 @@ fn main() {
                                 
                                 // 获取所有活跃便签
                                 let app_data_dir = get_app_data_dir().unwrap();
-                                let index = validate_and_fix_index(&app_data_dir).unwrap_or_else(|_| {
-                                    IndexFile {
-                                        version: 2,
-                                        app: AppInfo {
-                                            name: "FadeNote".to_string(),
-                                            created_at: get_current_iso8601_time(),
-                                            rebuild_at: None,
-                                        },
-                                        notes: Vec::new(),
-                                    }
-                                });
+                                let index = validate_and_fix_index(&app_data_dir).unwrap_or_else(|_| new_empty_index());
                                 
                                 println!("索引中便签总数: {}", index.notes.len());
                                 
@@ -2033,15 +1810,7 @@ fn main() {
                             Ok(idx) => idx,
                             Err(e) => {
                                 eprintln!("验证和修复索引失败: {}", e);
-                                IndexFile {
-                                    version: 2,
-                                    app: AppInfo {
-                                        name: "FadeNote".to_string(),
-                                        created_at: get_current_iso8601_time(),
-                                        rebuild_at: None,
-                                    },
-                                    notes: Vec::new(),
-                                }
+                                new_empty_index()
                             }
                         };
                         
@@ -2049,7 +1818,9 @@ fn main() {
                         // 3. Save index
                         let index_path = app_data_dir.join("index.json");
                         if let Ok(json_content) = serde_json::to_string_pretty(&index) {
-                            let _ = std::fs::write(&index_path, json_content);
+                            if let Err(e) = write_file_safely(&index_path, json_content) {
+                                eprintln!("保存索引失败: {}", e);
+                            }
                         }
                         
                         // 4. Get active notes for restoration
@@ -2098,11 +1869,8 @@ fn main() {
                             // 创建欢迎便签
                             let welcome_id = Uuid::new_v4().to_string();
                             let created_at = get_current_iso8601_time();
-                            let expires_at = (chrono::DateTime::parse_from_rfc3339(&created_at)
-                                .unwrap_or_else(|_| chrono::Local::now().into())
-                                .naive_local()
-                                .and_local_timezone(chrono::Local)
-                                .unwrap() + chrono::Duration::days(7)).to_rfc3339();
+                            let expires_at = expire_at_7_days_from_iso(&created_at)
+                                .unwrap_or_else(|_| (Local::now() + Duration::days(7)).to_rfc3339());
                             
                             // 创建欢迎内容
                             let welcome_content = get_welcome_content();
@@ -2115,7 +1883,10 @@ fn main() {
 
                             // 创建文件
                             let file_path = dated_dir.join(format!("{}.md", welcome_id));
-                            std::fs::write(&file_path, full_content).unwrap();
+                            if let Err(e) = write_file_safely(&file_path, full_content) {
+                                eprintln!("创建欢迎便签文件失败 {}: {}", welcome_id, e);
+                                return;
+                            }
 
                             let rel_path = file_path.strip_prefix(&app_data_dir)
                                 .unwrap_or(&file_path)
@@ -2149,8 +1920,10 @@ fn main() {
                             // 保存索引
                             let json_content = serde_json::to_string_pretty(&index)
                                 .unwrap_or_else(|_| "{}".to_string());
-                            std::fs::write(&index_path, json_content)
-                                .unwrap();
+                            if let Err(e) = write_file_safely(&index_path, json_content) {
+                                eprintln!("保存欢迎便签索引失败 {}: {}", welcome_id, e);
+                                return;
+                            }
                             
                             // 创建欢迎便签窗口
                             let label = format!("note-{}", welcome_id);
@@ -2167,7 +1940,6 @@ fn main() {
                             ).await {
                                 Ok(_) => {
                                     println!("创建欢迎便签窗口: {}", welcome_id);
-                                    restored_count += 1;
                                 },
                                 Err(e) => eprintln!("创建欢迎便签窗口失败 {}: {}", welcome_id, e),
                             }
@@ -2179,25 +1951,9 @@ fn main() {
                             let index_path = app_data_dir.join("index.json");
                             let mut index: IndexFile = if index_path.exists() {
                                 let content = std::fs::read_to_string(&index_path).unwrap_or_else(|_| "{}".to_string());
-                                serde_json::from_str(&content).unwrap_or(IndexFile {
-                                    version: 2,
-                                    app: AppInfo {
-                                        name: "FadeNote".to_string(),
-                                        created_at: get_current_iso8601_time(),
-                                        rebuild_at: None,
-                                    },
-                                    notes: Vec::new(),
-                                })
+                                serde_json::from_str(&content).unwrap_or_else(|_| new_empty_index())
                             } else {
-                                IndexFile {
-                                    version: 2,
-                                    app: AppInfo {
-                                        name: "FadeNote".to_string(),
-                                        created_at: get_current_iso8601_time(),
-                                        rebuild_at: None,
-                                    },
-                                    notes: Vec::new(),
-                                }
+                                new_empty_index()
                             };
                             
                             // 生成UUID作为ID
@@ -2206,11 +1962,8 @@ fn main() {
                             // 创建时间信息
                             let created_at = get_current_iso8601_time();
                             // 解析创建时间并计算过期时间
-                            let created_datetime = DateTime::parse_from_rfc3339(&created_at)
-                                .unwrap_or_else(|_| chrono::Local::now().into());
-                            let expires_at = (created_datetime.naive_local()
-                                .and_local_timezone(chrono::Local)
-                                .unwrap() + chrono::Duration::days(7)).to_rfc3339();
+                            let expires_at = expire_at_7_days_from_iso(&created_at)
+                                .unwrap_or_else(|_| (Local::now() + Duration::days(7)).to_rfc3339());
                             
                             // 创建文件内容
                             let content = build_full_content(&id, &created_at, "");
@@ -2222,7 +1975,10 @@ fn main() {
 
                             // 创建文件
                             let file_path = dated_dir.join(format!("{}.md", id));
-                            std::fs::write(&file_path, content).unwrap();
+                            if let Err(e) = write_file_safely(&file_path, content) {
+                                eprintln!("创建默认便签文件失败 {}: {}", id, e);
+                                return;
+                            }
 
                             let rel_path = file_path.strip_prefix(&app_data_dir)
                                 .unwrap_or(&file_path)
@@ -2256,8 +2012,10 @@ fn main() {
 
                             let json_content = serde_json::to_string_pretty(&index)
                                 .unwrap_or_else(|_| "{}".to_string());
-                            std::fs::write(&index_path, json_content)
-                                .unwrap();
+                            if let Err(e) = write_file_safely(&index_path, json_content) {
+                                eprintln!("保存默认便签索引失败 {}: {}", id, e);
+                                return;
+                            }
                             
                             // 创建对应的窗口
                             let label = format!("note-{}", id);
