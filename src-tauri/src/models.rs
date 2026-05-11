@@ -55,8 +55,20 @@ pub struct ScheduleSettings {
     pub time: String,
     pub recurrence: String,
     pub weekdays: Vec<u32>,
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    #[serde(default = "default_language")]
+    pub language: String,
     #[serde(rename = "lastTriggeredKey")]
     pub last_triggered_key: Option<String>,
+}
+
+fn default_theme() -> String {
+    "paper".to_string()
+}
+
+fn default_language() -> String {
+    "system".to_string()
 }
 
 impl Default for ScheduleSettings {
@@ -66,6 +78,8 @@ impl Default for ScheduleSettings {
             time: "09:00".to_string(),
             recurrence: "daily".to_string(),
             weekdays: vec![1, 2, 3, 4, 5],
+            theme: default_theme(),
+            language: default_language(),
             last_triggered_key: None,
         }
     }

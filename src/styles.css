@@ -2,6 +2,92 @@
   box-sizing: border-box;
 }
 
+:root {
+  --app-bg: #f6f3ec;
+  --paper-bg: #fffdf5;
+  --paper-border: rgba(105, 92, 72, 0.06);
+  --paper-shadow: 0 18px 42px rgba(0,0,0,0.18);
+  --header-top: rgba(255,255,255,0.58);
+  --header-bottom: rgba(0,0,0,0.018);
+  --toolbar-bg: rgba(255, 253, 245, 0.42);
+  --toolbar-border: rgba(105, 92, 72, 0.035);
+  --toolbar-text: #756c60;
+  --toolbar-hover: rgba(105, 92, 72, 0.055);
+  --paper-text: #35312b;
+  --muted-text: #9c9286;
+  --placeholder-text: #aaa197;
+  --chip-border: rgba(126, 111, 91, 0.12);
+  --dot-ring-bg: rgba(255, 253, 245, 0.9);
+  --scrollbar: rgba(105, 92, 72, 0.16);
+  --scrollbar-hover: rgba(105, 92, 72, 0.24);
+  --list-marker: #6f675c;
+  --task-border: #9a9185;
+  --task-check: #758660;
+  --task-checked-bg: rgba(105, 92, 72, 0.045);
+}
+
+:root[data-theme="yellow"] {
+  --app-bg: #f4edda;
+  --paper-bg: #fff8dc;
+  --paper-border: rgba(128, 101, 55, 0.11);
+  --toolbar-bg: rgba(255, 246, 213, 0.56);
+  --toolbar-border: rgba(128, 101, 55, 0.055);
+  --toolbar-text: #75684d;
+  --toolbar-hover: rgba(128, 101, 55, 0.065);
+  --paper-text: #393226;
+  --muted-text: #8f8268;
+  --placeholder-text: #aaa086;
+  --chip-border: rgba(128, 101, 55, 0.12);
+  --dot-ring-bg: rgba(255, 248, 220, 0.9);
+  --scrollbar: rgba(128, 101, 55, 0.15);
+  --scrollbar-hover: rgba(128, 101, 55, 0.24);
+  --list-marker: #75684d;
+  --task-border: #9f9278;
+}
+
+:root[data-theme="blue"] {
+  --app-bg: #edf3f6;
+  --paper-bg: #f5fbff;
+  --paper-border: rgba(67, 102, 125, 0.1);
+  --toolbar-bg: rgba(235, 246, 252, 0.54);
+  --toolbar-border: rgba(67, 102, 125, 0.055);
+  --toolbar-text: #607483;
+  --toolbar-hover: rgba(67, 102, 125, 0.065);
+  --paper-text: #2d3740;
+  --muted-text: #7d8d98;
+  --placeholder-text: #91a0aa;
+  --chip-border: rgba(67, 102, 125, 0.13);
+  --dot-ring-bg: rgba(245, 251, 255, 0.9);
+  --scrollbar: rgba(67, 102, 125, 0.16);
+  --scrollbar-hover: rgba(67, 102, 125, 0.25);
+  --list-marker: #617581;
+  --task-border: #8aa0ad;
+}
+
+:root[data-theme="dusk"] {
+  --app-bg: #242321;
+  --paper-bg: #302f2b;
+  --paper-border: rgba(255, 245, 220, 0.08);
+  --paper-shadow: 0 18px 42px rgba(0,0,0,0.34);
+  --header-top: rgba(255,255,255,0.05);
+  --header-bottom: rgba(0,0,0,0.06);
+  --toolbar-bg: rgba(255, 245, 220, 0.035);
+  --toolbar-border: rgba(255, 245, 220, 0.045);
+  --toolbar-text: #b9b0a2;
+  --toolbar-hover: rgba(255, 245, 220, 0.065);
+  --paper-text: #ebe3d5;
+  --muted-text: #a79f93;
+  --placeholder-text: #837c73;
+  --chip-border: rgba(255, 245, 220, 0.1);
+  --dot-ring-bg: rgba(48, 47, 43, 0.9);
+  --scrollbar: rgba(255, 245, 220, 0.16);
+  --scrollbar-hover: rgba(255, 245, 220, 0.25);
+  --list-marker: #b9b0a2;
+  --task-border: #958c80;
+  --task-check: #b7c5a4;
+  --task-checked-bg: rgba(255, 245, 220, 0.05);
+}
+
 html, body {
   width: 100%;
   height: 100%;
@@ -15,9 +101,9 @@ html, body {
 .window-bg {
   width: 100%;
   height: 100%;
-  background: #f6f3ec;
+  background: var(--app-bg);
   border-radius: 14px;
-  box-shadow: 0 18px 42px rgba(0,0,0,0.18);
+  box-shadow: var(--paper-shadow);
   overflow: hidden;
 }
 
@@ -25,8 +111,8 @@ html, body {
 .paper {
   width: 100%;
   height: 100%;
-  background: #fffdf5;
-  border: 1px solid rgba(105, 92, 72, 0.06);
+  background: var(--paper-bg);
+  border: 1px solid var(--paper-border);
   border-radius: 14px;
   display: flex;
   flex-direction: column;
@@ -39,12 +125,19 @@ html, body {
   padding: 0 11px;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
   background: linear-gradient(
     to bottom,
-    rgba(255,255,255,0.58),
-    rgba(0,0,0,0.018)
+    var(--header-top),
+    var(--header-bottom)
   );
+}
+
+.window-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 /* Window controls */
@@ -123,48 +216,60 @@ html, body {
 .dot.active::after {
   opacity: 0.92;
 }
-/* 设置目录按钮 */
-.header-btn {
-  height: 20px;
-  padding: 0 8px;
-  background: #e0e0e0;
-  border: none;
-  border-radius: 4px;
-  font-size: 11px;
+
+.new-note-btn {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--toolbar-text);
   cursor: pointer;
-  margin-left: auto; /* 将按钮推到右侧 */
+  display: inline-flex;
+  font-size: 16px;
+  font-weight: 400;
+  height: 24px;
+  justify-content: center;
+  line-height: 1;
+  opacity: 0.68;
+  padding: 0;
+  transition:
+    background 0.14s ease,
+    border-color 0.14s ease,
+    opacity 0.14s ease,
+    transform 0.14s ease;
+  user-select: none;
+  width: 24px;
 }
 
-.header-btn:hover {
-  background: #d0d0d0;
+.new-note-btn:hover {
+  background: var(--toolbar-hover);
+  border-color: rgba(126, 111, 91, 0.08);
+  opacity: 1;
+  transform: translateY(-0.5px);
 }
-
-/* 当前目录显示 */
-.dir-display {
-  font-size: 10px;
-  color: #666;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 150px;
-  margin-left: 8px;
-}
-
+/* 设置目录按钮 */\n
 /* Markdown toolbar */
 .editor-toolbar {
   display: flex;
+  align-items: center;
   gap: 4px;
+  justify-content: space-between;
   padding: 4px 11px 5px;
-  border-bottom: 1px solid rgba(105, 92, 72, 0.035);
-  background: rgba(255, 253, 245, 0.42);
+  border-bottom: 1px solid var(--toolbar-border);
+  background: var(--toolbar-bg);
+}
+
+.toolbar-actions {
+  display: inline-flex;
+  gap: 3px;
 }
 
 .toolbar-btn {
   align-items: center;
-  border: none;
-  border-radius: 6px;
+  border: 1px solid transparent;
+  border-radius: 7px;
   background: transparent;
-  color: #756c60;
+  color: var(--toolbar-text);
   cursor: pointer;
   display: inline-flex;
   font-size: 13px;
@@ -172,9 +277,13 @@ html, body {
   justify-content: center;
   line-height: 1;
   min-width: 24px;
-  padding: 4px 6px;
-  opacity: 0.74;
-  transition: background 0.14s ease, opacity 0.14s ease;
+  padding: 0 6px;
+  opacity: 0.68;
+  transition:
+    background 0.14s ease,
+    border-color 0.14s ease,
+    opacity 0.14s ease,
+    transform 0.14s ease;
 }
 
 .toolbar-icon {
@@ -185,8 +294,10 @@ html, body {
 }
 
 .toolbar-btn:hover {
-  background: rgba(105, 92, 72, 0.055);
+  background: var(--toolbar-hover);
+  border-color: rgba(126, 111, 91, 0.08);
   opacity: 1;
+  transform: translateY(-0.5px);
 }
 
 .toolbar-btn:hover .toolbar-icon {
@@ -195,6 +306,61 @@ html, body {
 
 .toolbar-btn[data-format="bold"] {
   font-weight: 700;
+}
+
+.note-status-strip {
+  align-items: center;
+  color: var(--muted-text);
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  min-height: 24px;
+  opacity: 0.78;
+  user-select: none;
+}
+
+.lifecycle-chip {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--muted-text);
+  font-size: 10px;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  max-width: 52px;
+  overflow: hidden;
+  padding: 3px 4px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lifecycle-chip.pinned {
+  border-color: rgba(106, 167, 232, 0.18);
+  color: #6f98c4;
+}
+
+.lifecycle-chip.soon {
+  border-color: rgba(255, 189, 76, 0.24);
+  color: #b99052;
+}
+
+.save-dot {
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--dot-ring-bg);
+  display: inline-block;
+  height: 6px;
+  width: 6px;
+}
+
+.save-dot.saving {
+  background: #ffbd4c;
+}
+
+.save-dot.saved {
+  background: #42c85a;
+}
+
+.save-dot.error {
+  background: #ff625a;
 }
 
 /* 内容区 */
@@ -207,13 +373,13 @@ html, body {
   background: transparent;
   font-size: 14px;
   line-height: 1.58;
-  color: #35312b;
+  color: var(--paper-text);
 }
 
 .markdown-editor {
   overflow-y: auto;
   position: relative;
-  scrollbar-color: rgba(105, 92, 72, 0.16) transparent;
+  scrollbar-color: var(--scrollbar) transparent;
   scrollbar-width: thin;
   white-space: pre-wrap;
   word-break: break-word;
@@ -228,20 +394,20 @@ html, body {
 }
 
 .markdown-editor::-webkit-scrollbar-thumb {
-  background: rgba(105, 92, 72, 0.14);
+  background: var(--scrollbar);
   background-clip: content-box;
   border: 2px solid transparent;
   border-radius: 999px;
 }
 
 .markdown-editor::-webkit-scrollbar-thumb:hover {
-  background: rgba(105, 92, 72, 0.24);
+  background: var(--scrollbar-hover);
   background-clip: content-box;
 }
 
 .markdown-editor.is-empty::before {
-  content: "Write something...";
-  color: #aaa197;
+  content: attr(data-placeholder);
+  color: var(--placeholder-text);
   left: 16px;
   position: absolute;
   top: 14px;
@@ -278,7 +444,7 @@ html, body {
 }
 
 .list-bullet::before {
-  background: #6f675c;
+  background: var(--list-marker);
   border-radius: 50%;
   content: "";
   display: block;
@@ -289,9 +455,9 @@ html, body {
 .task-toggle {
   align-items: center;
   background: transparent;
-  border: 1.4px solid #9a9185;
+  border: 1.4px solid var(--task-border);
   border-radius: 4px;
-  color: #758660;
+  color: var(--task-check);
   cursor: pointer;
   display: inline-flex;
   flex: 0 0 14px;
@@ -306,7 +472,7 @@ html, body {
 }
 
 .task-toggle:hover {
-  background: rgba(105, 92, 72, 0.045);
+  background: var(--task-checked-bg);
 }
 
 .task-line.checked .task-toggle {
@@ -316,28 +482,4 @@ html, body {
 
 .md-bold {
   font-weight: 700;
-}
-
-.note-footer {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 5px 12px 7px;
-  border-top: 1px solid rgba(105, 92, 72, 0.035);
-  color: #aca399;
-  font-size: 11px;
-  line-height: 1;
-  user-select: none;
-}
-
-#note-save-status.saving {
-  color: #b99052;
-}
-
-#note-save-status.saved {
-  color: #8da07e;
-}
-
-#note-save-status.error {
-  color: #bd7568;
 }

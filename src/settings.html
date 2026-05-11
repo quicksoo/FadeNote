@@ -1,20 +1,111 @@
-﻿<!DOCTYPE html>
-<html lang="en">
+<!DOCTYPE html>
+<html lang="en" data-i18n-document-title="settings.documentTitle">
 <head>
   <meta charset="UTF-8" />
   <title>FadeNote Settings</title>
   <style>
+    :root {
+      --app-bg: #f6f3ec;
+      --panel-bg: #fffdf5;
+      --panel-border: #e8e2d6;
+      --text: #333;
+      --title-text: #4d463f;
+      --muted-text: #9b9287;
+      --input-bg: #fff;
+      --input-border: #ddd5c7;
+      --readonly-bg: #f1eee7;
+      --secondary-bg: #eee8dd;
+      --secondary-text: #4c463f;
+      --scrollbar: rgba(105, 92, 72, 0.16);
+      --scrollbar-hover: rgba(105, 92, 72, 0.24);
+    }
+    :root[data-theme="yellow"] {
+      --app-bg: #f4edda;
+      --panel-bg: #fff8dc;
+      --panel-border: rgba(128, 101, 55, 0.14);
+      --text: #393226;
+      --title-text: #66583d;
+      --muted-text: #8f8268;
+      --input-bg: #fffaf0;
+      --input-border: rgba(128, 101, 55, 0.18);
+      --readonly-bg: #f2ead5;
+      --secondary-bg: #eee2c4;
+      --secondary-text: #66583d;
+      --scrollbar: rgba(128, 101, 55, 0.15);
+      --scrollbar-hover: rgba(128, 101, 55, 0.24);
+    }
+    :root[data-theme="blue"] {
+      --app-bg: #edf3f6;
+      --panel-bg: #f5fbff;
+      --panel-border: rgba(67, 102, 125, 0.16);
+      --text: #2d3740;
+      --title-text: #405664;
+      --muted-text: #7d8d98;
+      --input-bg: #fbfdff;
+      --input-border: rgba(67, 102, 125, 0.2);
+      --readonly-bg: #e7f0f5;
+      --secondary-bg: #dfeaf0;
+      --secondary-text: #405664;
+      --scrollbar: rgba(67, 102, 125, 0.16);
+      --scrollbar-hover: rgba(67, 102, 125, 0.25);
+    }
+    :root[data-theme="dusk"] {
+      --app-bg: #242321;
+      --panel-bg: #302f2b;
+      --panel-border: rgba(255, 245, 220, 0.1);
+      --text: #ebe3d5;
+      --title-text: #efe4d1;
+      --muted-text: #a79f93;
+      --input-bg: #3b3934;
+      --input-border: rgba(255, 245, 220, 0.12);
+      --readonly-bg: #292824;
+      --secondary-bg: #403e38;
+      --secondary-text: #d8cfbf;
+      --scrollbar: rgba(255, 245, 220, 0.16);
+      --scrollbar-hover: rgba(255, 245, 220, 0.25);
+    }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       padding: 22px;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #f6f3ec;
-      color: #333;
+      background: var(--app-bg);
+      color: var(--text);
+      scrollbar-color: var(--scrollbar) transparent;
+      scrollbar-width: thin;
+    }
+
+    html {
+      scrollbar-color: var(--scrollbar) transparent;
+      scrollbar-width: thin;
+    }
+
+    body::-webkit-scrollbar,
+    html::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    body::-webkit-scrollbar-track,
+    html::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    body::-webkit-scrollbar-thumb,
+    html::-webkit-scrollbar-thumb {
+      background: var(--scrollbar);
+      background-clip: content-box;
+      border: 2px solid transparent;
+      border-radius: 999px;
+    }
+
+    body::-webkit-scrollbar-thumb:hover,
+    html::-webkit-scrollbar-thumb:hover {
+      background: var(--scrollbar-hover);
+      background-clip: content-box;
     }
     .panel {
-      background: #fffdf5;
-      border: 1px solid #e8e2d6;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
       border-radius: 14px;
       box-shadow: 0 12px 30px rgba(0,0,0,0.08);
       padding: 20px;
@@ -37,30 +128,30 @@
       margin-bottom: 4px;
     }
     .setting-title {
-      color: #4d463f;
+      color: var(--title-text);
       font-size: 13px;
       font-weight: 600;
     }
     .setting-desc {
-      color: #9b9287;
+      color: var(--muted-text);
       font-size: 12px;
       line-height: 1.45;
       margin: 0 0 12px;
     }
     .row { margin: 12px 0; }
-    label { display: block; font-size: 12px; color: #6a6257; margin-bottom: 6px; }
+    label { display: block; font-size: 12px; color: var(--title-text); margin-bottom: 6px; }
     input[type="time"], input[readonly], select {
       width: 100%;
-      border: 1px solid #ddd5c7;
+      border: 1px solid var(--input-border);
       border-radius: 8px;
-      background: #fff;
-      color: #333;
+      background: var(--input-bg);
+      color: var(--text);
       font-size: 14px;
       padding: 8px 10px;
     }
     input[readonly] {
-      background: #f1eee7;
-      color: #8a8176;
+      background: var(--readonly-bg);
+      color: var(--muted-text);
       cursor: default;
     }
     .switch-row, .weekday-row, .actions {
@@ -91,8 +182,9 @@
       font-size: 13px;
     }
     .primary { background: #333; color: #fff; }
-    .secondary { background: #eee8dd; color: #4c463f; }
-    .status { min-height: 18px; color: #777; font-size: 12px; margin-top: 14px; }
+    .secondary { background: var(--secondary-bg); color: var(--secondary-text); }
+    .status { min-height: 18px; color: var(--muted-text); font-size: 12px; margin-top: 14px; }
+    .theme-controls .row { margin: 0; }
     @media (max-width: 420px) {
       .schedule-grid { grid-template-columns: 1fr; }
     }
@@ -100,64 +192,99 @@
 </head>
 <body>
   <div class="panel">
-    <h1>Settings</h1>
+    <h1 data-i18n="settings.title">Settings</h1>
 
     <div class="setting-group">
       <div class="setting-header">
-        <div class="setting-title">Scheduled raise</div>
+        <div class="setting-title" data-i18n="settings.themeTitle">Theme</div>
       </div>
-      <p class="setting-desc">Bring active notes to the front at a set time.</p>
+      <p class="setting-desc" data-i18n="settings.themeDesc">Choose a quiet global paper tone.</p>
+      <div class="theme-controls">
+        <div class="row">
+          <label for="theme" data-i18n="settings.themeLabel">Theme</label>
+          <select id="theme">
+            <option value="paper" data-i18n="settings.theme.paper">Paper</option>
+            <option value="yellow" data-i18n="settings.theme.yellow">Cream</option>
+            <option value="blue" data-i18n="settings.theme.blue">Blue</option>
+            <option value="dusk" data-i18n="settings.theme.dusk">Dusk</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="setting-group">
+      <div class="setting-header">
+        <div class="setting-title" data-i18n="settings.languageTitle">Language</div>
+      </div>
+      <p class="setting-desc" data-i18n="settings.languageDesc">Follow the system language, or choose one manually.</p>
+      <div class="row">
+        <label for="language" data-i18n="settings.languageLabel">Language</label>
+        <select id="language">
+          <option value="system" data-i18n="settings.language.system">System</option>
+          <option value="zh-CN" data-i18n="settings.language.zhCN">简体中文</option>
+          <option value="en" data-i18n="settings.language.en">English</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="setting-group">
+      <div class="setting-header">
+        <div class="setting-title" data-i18n="settings.scheduleTitle">Scheduled raise</div>
+      </div>
+      <p class="setting-desc" data-i18n="settings.scheduleDesc">Bring active notes to the front at a set time.</p>
 
       <div class="row switch-row">
         <input id="enabled" type="checkbox" />
-        <label for="enabled" style="margin:0;">Enable scheduled raise</label>
+        <label for="enabled" style="margin:0;" data-i18n="settings.enableSchedule">Enable scheduled raise</label>
       </div>
 
       <div class="schedule-grid">
         <div class="row">
-          <label for="time">Time</label>
+          <label for="time" data-i18n="settings.time">Time</label>
           <input id="time" type="time" value="09:00" />
         </div>
 
         <div class="row">
-          <label for="recurrence">Repeat</label>
+          <label for="recurrence" data-i18n="settings.repeat">Repeat</label>
           <select id="recurrence">
-            <option value="daily">Daily</option>
-            <option value="weekly">Weekly</option>
+            <option value="daily" data-i18n="settings.daily">Daily</option>
+            <option value="weekly" data-i18n="settings.weekly">Weekly</option>
           </select>
         </div>
       </div>
 
       <div class="row" id="weekdays-row">
-        <label>Weekdays</label>
+        <label data-i18n="settings.weekdays">Weekdays</label>
         <div class="weekday-row">
-          <label><input type="checkbox" value="1" /> Mon</label>
-          <label><input type="checkbox" value="2" /> Tue</label>
-          <label><input type="checkbox" value="3" /> Wed</label>
-          <label><input type="checkbox" value="4" /> Thu</label>
-          <label><input type="checkbox" value="5" /> Fri</label>
-          <label><input type="checkbox" value="6" /> Sat</label>
-          <label><input type="checkbox" value="7" /> Sun</label>
+          <label><input type="checkbox" value="1" /> <span data-i18n="settings.mon">Mon</span></label>
+          <label><input type="checkbox" value="2" /> <span data-i18n="settings.tue">Tue</span></label>
+          <label><input type="checkbox" value="3" /> <span data-i18n="settings.wed">Wed</span></label>
+          <label><input type="checkbox" value="4" /> <span data-i18n="settings.thu">Thu</span></label>
+          <label><input type="checkbox" value="5" /> <span data-i18n="settings.fri">Fri</span></label>
+          <label><input type="checkbox" value="6" /> <span data-i18n="settings.sat">Sat</span></label>
+          <label><input type="checkbox" value="7" /> <span data-i18n="settings.sun">Sun</span></label>
         </div>
       </div>
 
       <div class="actions">
-        <button class="primary" id="save">Save</button>
-        <button class="secondary" id="raise-now">Raise now</button>
+        <button class="primary" id="save" data-i18n="common.save">Save</button>
+        <button class="secondary" id="raise-now" data-i18n="settings.raiseNow">Raise now</button>
       </div>
     </div>
 
     <div class="setting-group">
       <div class="setting-header">
-        <label class="setting-title" for="save-dir">File save directory</label>
+        <label class="setting-title" for="save-dir" data-i18n="settings.fileDir">File save directory</label>
       </div>
-      <p class="setting-desc">Notes are saved as local Markdown files here.</p>
-      <input id="save-dir" type="text" readonly value="Loading..." />
+      <p class="setting-desc" data-i18n="settings.fileDirDesc">Notes are saved as local Markdown files here.</p>
+      <input id="save-dir" type="text" readonly value="Loading..." data-i18n-value="settings.loading" />
     </div>
 
     <div class="status" id="status"></div>
   </div>
 
+  <script src="./theme.js"></script>
+  <script src="./i18n.js"></script>
   <script src="./settings.js"></script>
 </body>
 </html>

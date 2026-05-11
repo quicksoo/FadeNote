@@ -10,22 +10,32 @@
   <div class="window-bg">
 
     <div class="paper">
-      <!-- Title bar: Only draggable here -->
-      <div class="paper-header" data-tauri-drag-region>
-        <span class="dot red btn-close" id="btn-close" data-tauri-drag-region="false" title="Close" aria-label="Close"></span>
-        <span class="dot orange btn-delete" id="btn-delete" data-tauri-drag-region="false" title="Delete" aria-label="Delete"></span>
-        <span class="dot green btn-top" id="btn-top" data-tauri-drag-region="false" title="Always on Top" aria-label="Always on Top"></span>
-        <span class="dot blue btn-pin" id="btn-pin" data-tauri-drag-region="false" title="Pin" aria-label="Pin"></span>
+      <!-- Title bar: JS dragging only; double-click is intentionally inert. -->
+      <div class="paper-header">
+        <div class="window-dots">
+          <span class="dot red btn-close" id="btn-close" data-tauri-drag-region="false" title="Close" aria-label="Close" data-i18n-title="note.close" data-i18n-aria-label="note.close"></span>
+          <span class="dot orange btn-delete" id="btn-delete" data-tauri-drag-region="false" title="Delete" aria-label="Delete" data-i18n-title="note.delete" data-i18n-aria-label="note.delete"></span>
+          <span class="dot green btn-top" id="btn-top" data-tauri-drag-region="false" title="Always on Top" aria-label="Always on Top" data-i18n-title="note.alwaysOnTop" data-i18n-aria-label="note.alwaysOnTop"></span>
+          <span class="dot blue btn-pin" id="btn-pin" data-tauri-drag-region="false" title="Pin" aria-label="Pin" data-i18n-title="note.pin" data-i18n-aria-label="note.pin"></span>
+        </div>
+        <button type="button" class="new-note-btn" id="btn-new-note" title="New note (Ctrl+N)" aria-label="New note" data-i18n-title="note.newButtonTitle" data-i18n-aria-label="note.newButton">+</button>
       </div>
 
       <div class="editor-toolbar" data-tauri-drag-region="false">
-        <button type="button" class="toolbar-btn" data-format="bold" title="Bold (Ctrl+B)">B</button>
-        <button type="button" class="toolbar-btn" data-format="list" title="List">
-          <img class="toolbar-icon" src="./assets/task.png" alt="" />
-        </button>
-        <button type="button" class="toolbar-btn" data-format="task" title="Task">
-          <img class="toolbar-icon" src="./assets/list.png" alt="" />
-        </button>
+        <div class="toolbar-actions">
+          <button type="button" class="toolbar-btn" data-format="bold" title="Bold (Ctrl+B)" data-i18n-title="note.bold">B</button>
+          <button type="button" class="toolbar-btn" data-format="list" title="List" data-i18n-title="note.list">
+            <img class="toolbar-icon" src="./assets/list.png" alt="" />
+          </button>
+          <button type="button" class="toolbar-btn" data-format="task" title="Task" data-i18n-title="note.task">
+            <img class="toolbar-icon" src="./assets/task.png" alt="" />
+          </button>
+        </div>
+
+        <div class="note-status-strip" aria-label="Note status" data-i18n-aria-label="note.status">
+          <span id="note-lifecycle-status" class="lifecycle-chip">7d</span>
+          <span id="note-save-status" class="save-dot saved" title="Saved" aria-label="Saved" data-i18n-title="note.saved" data-i18n-aria-label="note.saved"></span>
+        </div>
       </div>
 
       <!-- Markdown editor: stores markdown, previews supported syntax inline -->
@@ -35,15 +45,12 @@
         spellcheck="false"
       ></div>
 
-      <div class="note-footer" data-tauri-drag-region="false">
-        <span id="note-lifecycle-status">Auto archive</span>
-        <span id="note-save-status">Saved</span>
-      </div>
     </div>
 
   </div>
 
+  <script src="./theme.js"></script>
+  <script src="./i18n.js"></script>
   <script src="./main.js"></script>
 </body>
 </html>
-

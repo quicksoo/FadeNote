@@ -1,10 +1,14 @@
-﻿const { getCurrentWindow } = window.__TAURI__.window;
+const { getCurrentWindow } = window.__TAURI__.window;
 const win = getCurrentWindow();
 const editor = document.querySelector(".paper-content");
 const toolbar = document.querySelector(".editor-toolbar");
 const paper = document.querySelector(".paper");
 const saveStatus = document.getElementById("note-save-status");
 const lifecycleStatus = document.getElementById("note-lifecycle-status");
+
+function tr(key, values) {
+  return window.FadeNoteI18n?.t(key, values) || key;
+}
 
 async function showCustomConfirm(title, message) {
   return new Promise((resolve) => {
@@ -28,8 +32,8 @@ async function showCustomConfirm(title, message) {
         <div style="font-size:13px;color:#888;">${message}</div>
       </div>
       <div style="display:flex;justify-content:flex-end;gap:12px;">
-        <button id="cancel-btn" style="background:none;border:none;color:#666;font-size:14px;cursor:pointer;">Cancel</button>
-        <button id="confirm-btn" style="background:none;border:none;color:#d9534f;font-size:14px;font-weight:500;cursor:pointer;">Delete</button>
+        <button id="cancel-btn" style="background:none;border:none;color:#666;font-size:14px;cursor:pointer;">${tr('common.cancel')}</button>
+        <button id="confirm-btn" style="background:none;border:none;color:#d9534f;font-size:14px;font-weight:500;cursor:pointer;">${tr('common.delete')}</button>
       </div>
     `;
 
@@ -103,7 +107,7 @@ function plainTitleFromMarkdown(markdown) {
     .map((line) => line.trim())
     .find(Boolean);
 
-  if (!firstLine) return "New Note · FadeNote";
+  if (!firstLine) return `${tr('note.newTitle')} · FadeNote`;
 
   const text = firstLine
     .replace(/^[-*]\s+\[[ xX]\]\s+/, '')
@@ -112,33 +116,41 @@ function plainTitleFromMarkdown(markdown) {
     .trim()
     .slice(0, 40);
 
-  return `${text || 'New Note'} · FadeNote`;
+  return `${text || tr('note.newTitle')} · FadeNote`;
 }
 
 function setSaveStatus(status, label) {
   if (!saveStatus) return;
-  saveStatus.textContent = label;
-  saveStatus.className = status;
+  saveStatus.textContent = '';
+  saveStatus.className = `save-dot ${status}`;
+  saveStatus.title = label;
+  saveStatus.setAttribute('aria-label', label);
 }
 
 function formatRemainingTime(expireAt) {
-  if (!expireAt) return "Archive date pending";
+  if (!expireAt) return { label: '—', title: tr('note.archivePending'), tone: 'pending' };
   const remainingMs = new Date(expireAt).getTime() - Date.now();
-  if (!Number.isFinite(remainingMs)) return "Archive date pending";
-  if (remainingMs <= 0) return "Archiving soon";
+  if (!Number.isFinite(remainingMs)) return { label: '—', title: tr('note.archivePending'), tone: 'pending' };
+  if (remainingMs <= 0) return { label: 'soon', title: 'Archiving soon', tone: 'soon' };
 
   const hours = Math.ceil(remainingMs / (1000 * 60 * 60));
-  if (hours < 24) return `${hours}h left`;
-  return `${Math.ceil(hours / 24)}d left`;
+  if (hours < 24) return { label: `${hours}h`, title: `${hours}h left`, tone: 'soon' };
+  const days = Math.ceil(hours / 24);
+  return { label: `${days}d`, title: `${days}d left`, tone: 'normal' };
 }
 
 function updateLifecycleStatus() {
   if (!lifecycleStatus) return;
   if (isPinned || currentNoteDetail?.pinned) {
-    lifecycleStatus.textContent = "Pinned · stays";
+    lifecycleStatus.textContent = 'pin';
+    lifecycleStatus.title = 'Pinned · stays';
+    lifecycleStatus.className = 'lifecycle-chip pinned';
     return;
   }
-  lifecycleStatus.textContent = formatRemainingTime(currentNoteDetail?.expireAt);
+  const remaining = formatRemainingTime(currentNoteDetail?.expireAt);
+  lifecycleStatus.textContent = remaining.label;
+  lifecycleStatus.title = remaining.title;
+  lifecycleStatus.className = `lifecycle-chip ${remaining.tone}`;
 }
 
 async function updateWindowTitle() {
@@ -452,7 +464,7 @@ function markdownToVisibleOffset(content, markdownOffset) {
 
 function scheduleAutoSave() {
   if (idleTimer) clearTimeout(idleTimer);
-  setSaveStatus('saving', 'Saving...');
+  setSaveStatus('saving', tr('note.saving'));
 
   idleTimer = setTimeout(async () => {
     if (!noteId) return;
@@ -460,7 +472,7 @@ function scheduleAutoSave() {
       await saveCurrentNoteContent();
     } catch (err) {
       console.error('Failed to save note content:', err);
-      setSaveStatus('error', 'Save failed');
+      setSaveStatus('error', tr('note.saveFailed'));
     }
   }, 3000);
 
@@ -476,13 +488,13 @@ async function saveCurrentNoteContent({ touchActivity = true } = {}) {
   }
 
   markdownSource = readMarkdownFromEditor();
-  setSaveStatus('saving', 'Saving...');
+  setSaveStatus('saving', tr('note.saving'));
   await window.__TAURI__.core.invoke(touchActivity ? 'save_note_content' : 'save_note_content_without_touch', {
     id: noteId,
     content: markdownSource
   });
   if (touchActivity) await updateWindowTitle();
-  setSaveStatus('saved', 'Saved');
+  setSaveStatus('saved', tr('note.saved'));
 }
 
 async function closeAfterSaving({ touchActivity = true, destroy = false } = {}) {
@@ -497,7 +509,7 @@ async function closeAfterSaving({ touchActivity = true, destroy = false } = {}) 
     await saveCurrentNoteContent({ touchActivity });
   } catch (err) {
     console.error('Failed to save note before close:', err);
-    setSaveStatus('error', 'Save failed');
+    setSaveStatus('error', tr('note.saveFailed'));
   }
 
   try {
@@ -728,7 +740,7 @@ async function createNewNoteWindow(offset = 20) {
 
   await window.__TAURI__.core.invoke('create_note_window', {
     label: `note-${newNoteId}`,
-    title: "New Note · FadeNote",
+    title: `${tr('note.newTitle')} · FadeNote`,
     width: size.width,
     height: size.height,
     x: Math.round(position.x + offset),
@@ -741,10 +753,18 @@ function initializeButtonEvents() {
     await closeAfterSaving();
   });
 
+  document.getElementById("btn-new-note")?.addEventListener('click', async () => {
+    try {
+      await createNewNoteWindow(20);
+    } catch (err) {
+      console.error('Failed to create new note:', err);
+    }
+  });
+
   document.getElementById("btn-delete").addEventListener('click', async () => {
     if (!noteId) return;
 
-    const userConfirmed = await showCustomConfirm("Delete this note?", "This cannot be undone.");
+    const userConfirmed = await showCustomConfirm(tr('note.deleteTitle'), tr('note.deleteMessage'));
     if (!userConfirmed) return;
 
     try {
@@ -904,13 +924,32 @@ function initializeMarkdownEditor() {
   });
 }
 
-function initializeNewNoteGesture() {
-  paper?.addEventListener('dblclick', async (event) => {
-    if (event.target.closest('.markdown-editor, .editor-toolbar, .toolbar-btn, .dot')) return;
+function initializeWindowDrag() {
+  const header = document.querySelector('.paper-header');
+  if (!header) return;
 
+  header.addEventListener('dblclick', (event) => {
     event.preventDefault();
     event.stopPropagation();
+  }, true);
 
+  header.addEventListener('mousedown', async (event) => {
+    if (event.button !== 0 || event.detail > 1 || event.target.closest('.dot, .new-note-btn')) return;
+
+    event.preventDefault();
+    try {
+      await win.startDragging();
+    } catch (err) {
+      console.warn('Failed to start window drag:', err);
+    }
+  });
+}
+
+function initializeNewNoteGesture() {
+  document.addEventListener('keydown', async (event) => {
+    if (isComposing || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'n') return;
+
+    event.preventDefault();
     try {
       await createNewNoteWindow(20);
     } catch (err) {
@@ -941,19 +980,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   hasInitialized = true;
 
   initializeButtonEvents();
+  initializeWindowDrag();
   initializeMarkdownEditor();
   initializeNewNoteGesture();
   initializeLifecycleEvents();
 
-  try {
-    const currentDir = await window.__TAURI__.core.invoke('ensure_notes_directory');
-    const currentDirDisplay = document.getElementById("current-dir-display");
-    if (currentDir && currentDirDisplay) {
-      currentDirDisplay.textContent = `Directory: ${currentDir}`;
-    }
-  } catch (err) {
-    console.error('Failed to get notes directory:', err);
-  }
 
   let windowLabel = '';
   if (noteId && noteIdSet) {
@@ -996,12 +1027,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     const savedContent = await window.__TAURI__.core.invoke('load_note', { id: noteId });
     setMarkdownSource(savedContent || "", false);
-    setSaveStatus('saved', 'Saved');
+    setSaveStatus('saved', tr('note.saved'));
     updateLifecycleStatus();
   } catch (err) {
     console.warn('Failed to load note content:', err);
     setMarkdownSource("", false);
-    setSaveStatus('error', 'Load failed');
+    setSaveStatus('error', tr('note.loadFailed'));
   }
 
   window.addEventListener('beforeunload', () => {
@@ -1033,4 +1064,3 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   } catch {}
 });
-

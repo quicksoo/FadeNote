@@ -1323,6 +1323,7 @@ async fn create_note_window(
     .inner_size(width as f64, height as f64)
     .resizable(true)
     .decorations(false)
+    .maximizable(false)
     .transparent(false)
     .always_on_top(false)
     .visible(true);
